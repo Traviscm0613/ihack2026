@@ -2,24 +2,24 @@
 
 This document defines the database architecture for the LocalLearn server running on a Raspberry Pi. The server database is the authoritative source for school users, classes, assignments, submissions, quizzes, grades, feedback, calendar events, and class materials.
 
-The React Native client must not connect directly to MySQL. Clients communicate with the local API over the school Wi-Fi. Each client may maintain a local SQLite cache and an outbox for offline work, but the Raspberry Pi server is authoritative after synchronization.
+The React Native client must not connect directly to SQLite. Clients communicate with the local API over the school Wi-Fi. Each client may maintain a local SQLite cache and an outbox for offline work, but the Raspberry Pi server is authoritative after synchronization.
 
 ## Technology
 
-- Database: MySQL 8.x
+- Database: SQLite 3 (Python standard library `sqlite3`)
 - Host: Raspberry Pi on the school’s local network
 - API: Local HTTP API hosted on the Raspberry Pi
 - File storage: A local server directory or attached storage device
-- Backups: MySQL logical backups plus a separate copy of uploaded files
+- Backups: SQLite database copy plus a separate copy of uploaded files
 - Network: LAN-only by default; internet access is not required
 
-The exact Raspberry Pi model, MySQL version, storage device, expected user count, and simultaneous-user target remain deployment parameters and should be recorded before production installation.
+The exact Raspberry Pi model, Python/SQLite version, storage device, expected user count, and simultaneous-user target remain deployment parameters and should be recorded before production installation.
 
 ## Design principles
 
-1. MySQL is the server source of truth.
-2. The API is the only component allowed to modify MySQL.
-3. Uploaded files are stored outside MySQL and referenced by database rows.
+1. SQLite is the server source of truth.
+2. The API is the only component allowed to modify SQLite.
+3. Uploaded files are stored outside SQLite and referenced by database rows.
 4. Every client mutation has a stable client-generated ID for safe retry.
 5. Server writes should be idempotent where possible.
 6. Deleting records should be avoided when a soft-delete or archival state is sufficient.
@@ -313,7 +313,7 @@ The server should authenticate every request, authorize access by role and class
 
 ## File storage
 
-MySQL stores metadata, not uploaded file contents. Files should be stored below a configured application data directory, for example:
+SQLite stores metadata, not uploaded file contents. Files should be stored below a configured application data directory, for example:
 
 ```text
 /srv/locallearn/data/files/{entity}/{uuid}
@@ -325,17 +325,16 @@ The database stores the generated `storage_key`, original filename, MIME type, b
 
 The server should create:
 
-1. A daily MySQL dump using a consistent dump process.
+1. A daily SQLite backup using SQLite's backup API or a consistent file-copy process while using WAL mode.
 2. A matching backup of the file-storage directory.
 3. A backup manifest containing database dump name, file archive name, timestamp, and checksum.
 4. At least one copy on an external USB drive or other storage device.
 
-Backups should be tested by restoring them to a separate MySQL database and checking that file checksums match the manifest. The Raspberry Pi’s SD card should not be treated as the only copy of student records.
+Backups should be tested by restoring them to a separate SQLite database and checking that file checksums match the manifest. The Raspberry Pi’s SD card should not be treated as the only copy of student records.
 
 ## Security and operations
 
-- Use a dedicated MySQL application user with only required database privileges.
-- Do not expose MySQL directly to the school Wi-Fi.
+- Keep the SQLite database in the server data directory and do not expose the database file over the network.
 - Bind the API to the Raspberry Pi’s local network interface and use API authentication.
 - Hash passwords with a modern password-hashing algorithm.
 - Validate authorization on the server even when a client supplies a class or user ID.
@@ -346,7 +345,7 @@ Backups should be tested by restoring them to a separate MySQL database and chec
 ## Initial parameters to decide
 
 - Raspberry Pi model and available RAM
-- MySQL version and installation method
+- SQLite/Python version supplied by the Raspberry Pi OS image
 - Expected number of simultaneous clients
 - Maximum assignment file size
 - Maximum total storage size
