@@ -13,11 +13,11 @@ import { ClassesScreen } from './src/screens/ClassesScreen';
 import { ClassDetailScreen } from './src/screens/ClassDetailScreen';
 import { MaterialViewerScreen } from './src/screens/MaterialViewerScreen';
 import { QuizScreen } from './src/screens/QuizScreen';
-import { getConfiguredServerUrl, fetchServerSnapshot } from './src/services/serverApi';
+import { getConfiguredServerCredentials, getConfiguredServerUrl, fetchServerSnapshot, LocalServerClient } from './src/services/serverApi';
 import { CalendarScreen } from './src/screens/CalendarScreen';
 import { AdministratorScreen } from './src/screens/AdministratorScreen';
 import { TeacherScreen } from './src/screens/TeacherScreen';
-import { LocalServerClient, type UserRole } from './src/services/serverApi';
+import { type UserRole } from './src/services/serverApi';
 import { syncQueue } from './src/services/syncQueue';
 
 export default function App() {
@@ -39,6 +39,8 @@ export default function App() {
       const serverUrl = getConfiguredServerUrl();
       if (serverUrl) {
         try {
+          const credentials = getConfiguredServerCredentials();
+          if (credentials) await new LocalServerClient(serverUrl).login(credentials.username, credentials.password);
           await applyServerSnapshot(await fetchServerSnapshot(serverUrl));
           await syncQueue.flush(new LocalServerClient(serverUrl));
         } catch (error) {
