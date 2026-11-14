@@ -1,9 +1,9 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Dashboard } from './src/screens/Dashboard';
 import { NavigationBar } from './src/components/NavigationBar';
-import { theme } from './src/theme';
+import { activeTheme, setTheme, theme, themes, type ThemeName } from './src/theme';
 import { assignments } from './src/data/mockData';
 import { applyServerSnapshot, getClassDetail, getDashboardData, initializeDatabase, type DashboardData } from './src/db/database';
 import { DebugScreen } from './src/screens/DebugScreen';
@@ -18,6 +18,8 @@ import { CalendarScreen } from './src/screens/CalendarScreen';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
+  const [themeVersion, setThemeVersion] = useState(0);
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
@@ -64,13 +66,13 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
-      <View style={styles.app}>
+      <View key={themeVersion} style={styles.app}>
         <View style={styles.header}>
           <View>
             <Text style={styles.brand}>LocalLearn</Text>
             <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
-          <View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View>
+          <View style={styles.headerTools}><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
         </View>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
@@ -100,7 +102,20 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: theme.colors.page },
   app: { flex: 1 },
-  header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 },
+  headerTools: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  themePicker: { position: 'relative', zIndex: 20 },
+  themePickerButton: { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: 145, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6, backgroundColor: theme.colors.white },
+  themePickerLabel: { color: theme.colors.muted, fontSize: 9, fontWeight: '800' },
+  themePickerValue: { color: theme.colors.ink, fontSize: 9, fontWeight: '800', flexShrink: 1 },
+  themeChevron: { color: theme.colors.violet, fontSize: 13, fontWeight: '800' },
+  themeMenu: { position: 'absolute', top: 38, right: 0, width: 220, backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 10, padding: 6, shadowColor: theme.colors.ink, shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 5 },
+  themeMenuItem: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 8 },
+  themeMenuItemActive: { backgroundColor: theme.colors.violetSoft },
+  themeMenuSwatch: { width: 15, height: 15, borderRadius: 5 },
+  themeMenuText: { color: theme.colors.ink, fontSize: 10, flex: 1 },
+  themeMenuTextActive: { color: theme.colors.violet, fontWeight: '800' },
+  themeCheck: { color: theme.colors.violet, fontSize: 13, fontWeight: '800' },
   brand: { color: theme.colors.ink, fontSize: 20, fontWeight: '800' },
   breadcrumb: { color: theme.colors.muted, fontSize: 11, marginTop: 4 },
   breadcrumbStrong: { color: theme.colors.ink, fontWeight: '700' },
