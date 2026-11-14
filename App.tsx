@@ -1,17 +1,30 @@
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Dashboard } from './src/screens/Dashboard';
 import { NavigationBar } from './src/components/NavigationBar';
 import { theme } from './src/theme';
 import { assignments } from './src/data/mockData';
+import { getDashboardData, initializeDatabase, type DashboardData } from './src/db/database';
+import { DebugScreen } from './src/screens/DebugScreen';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [query, setQuery] = useState('');
+  const [databaseState, setDatabaseState] = useState<{ loading: boolean; error: string | null; data: DashboardData | null }>({ loading: true, error: null, data: null });
+  useEffect(() => {
+    let active = true;
+    initializeDatabase().then(() => getDashboardData()).then((data) => {
+      if (active) setDatabaseState({ loading: false, error: null, data });
+    }).catch((error) => {
+      if (active) setDatabaseState({ loading: false, error: error instanceof Error ? error.message : 'Unable to open the local database.', data: null });
+    });
+    return () => { active = false; };
+  }, []);
+  const refreshDatabase = async () => setDatabaseState({ loading: false, error: null, data: await getDashboardData() });
   const filteredAssignments = useMemo(
-    () => assignments.filter((item) => item.title.toLowerCase().includes(query.toLowerCase())),
-    [query],
+    () => (databaseState.data?.assignments ?? assignments).filter((item) => item.title.toLowerCase().includes(query.toLowerCase())),
+    [databaseState.data, query],
   );
 
   return (
@@ -26,8 +39,10 @@ export default function App() {
           <View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View>
         </View>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          {activeTab === 'Dashboard' ? (
-            <Dashboard assignments={filteredAssignments} query={query} onQueryChange={setQuery} />
+          {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
+            <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} query={query} onQueryChange={setQuery} />
+          ) : activeTab === 'Developer' ? (
+            <DebugScreen onSaved={refreshDatabase} />
           ) : (
             <View style={styles.placeholder}>
               <Text style={styles.placeholderEyebrow}>{activeTab.toUpperCase()}</Text>
@@ -57,4 +72,7 @@ const styles = StyleSheet.create({
   placeholderEyebrow: { color: theme.colors.violet, fontSize: 10, fontWeight: '800', letterSpacing: 1.1 },
   placeholderTitle: { color: theme.colors.ink, fontSize: 22, fontWeight: '800', marginTop: 10 },
   placeholderBody: { color: theme.colors.muted, fontSize: 13, lineHeight: 20, marginTop: 10 },
+  databaseMessage: { alignItems: 'center', paddingVertical: 40 },
+  databaseMessageText: { color: theme.colors.muted, fontSize: 12, marginTop: 10, textAlign: 'center' },
+  databaseError: { color: '#c45f69', fontSize: 15, fontWeight: '800' },
 });

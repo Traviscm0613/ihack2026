@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Assignment, classes } from '../data/mockData';
+import { Assignment } from '../data/mockData';
+import { CalendarEvent, SchoolClass } from '../db/database';
 import { theme } from '../theme';
 import { SectionHeader } from '../components/SectionHeader';
 
@@ -10,15 +11,15 @@ const statCards = [
   ['♧', 'Average grade', '92%', '↑ 4% this term', 'amber'],
 ] as const;
 
-export function Dashboard({ assignments, query, onQueryChange }: { assignments: Assignment[]; query: string; onQueryChange: (value: string) => void }) {
+export function Dashboard({ assignments, classes, event, query, onQueryChange }: { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; query: string; onQueryChange: (value: string) => void }) {
   return <View>
     <View style={styles.hero}><Text style={styles.kicker}>THURSDAY, NOVEMBER 13, 2026</Text><Text style={styles.heroTitle}>Good morning, Travis <Text style={styles.star}>✦</Text></Text><Text style={styles.subhead}>Here’s what’s happening across your classes.</Text><View style={styles.sync}><View style={styles.syncDot} /><View><Text style={styles.syncTitle}>Everything is synced</Text><Text style={styles.syncCaption}>Saved to local server</Text></View></View></View>
     <TextInput value={query} onChangeText={onQueryChange} placeholder="Search assignments..." placeholderTextColor="#a0a9bb" style={styles.search} />
     <View style={styles.statGrid}>{statCards.map(([icon, label, value, meta, tone]) => <View key={label} style={styles.stat}><View style={[styles.statIcon, { backgroundColor: theme.colors[`${tone}Soft` as keyof typeof theme.colors] as string }]}><Text style={[styles.statIconText, { color: theme.colors[tone as keyof typeof theme.colors] as string }]}>{icon}</Text></View><View><Text style={styles.statLabel}>{label}</Text><Text style={styles.statValue}>{value}</Text><Text style={styles.statMeta}>{meta}</Text></View></View>)}</View>
     <View style={styles.card}><SectionHeader eyebrow="STAY ON TRACK" title="Upcoming assignments" action="View all" />{assignments.length ? assignments.map((assignment) => <AssignmentRow key={assignment.id} assignment={assignment} />) : <Text style={styles.empty}>No assignments match your search.</Text>}</View>
-    <View style={styles.card}><SectionHeader eyebrow="YOUR SCHEDULE" title="November 2026" action="‹  ›" /><Calendar /><View style={styles.event}><View style={styles.eventDot} /><View><Text style={styles.eventTitle}>Today · Nov 13</Text><Text style={styles.eventBody}>Quadratic equations practice due</Text></View></View></View>
+    <View style={styles.card}><SectionHeader eyebrow="YOUR SCHEDULE" title="November 2026" action="‹  ›" /><Calendar /><View style={styles.event}><View style={styles.eventDot} /><View><Text style={styles.eventTitle}>{event ? `Today · ${event.date.slice(5).replace('-', '/')}` : 'No events scheduled'}</Text><Text style={styles.eventBody}>{event?.title ?? 'Your calendar is up to date.'}</Text></View></View></View>
     <View style={styles.card}><SectionHeader eyebrow="LOCAL-FIRST STATUS" title="Submission center" /><View style={styles.outbox}><Text style={styles.outboxIcon}>↑</Text><View><Text style={styles.outboxTitle}>Outbox is empty</Text><Text style={styles.outboxBody}>All your work has reached the local server.</Text></View></View><View style={styles.statusRow}><Text style={styles.statusText}>●  Connected to school network</Text><Text style={styles.statusValue}>192.168.4.1</Text></View><View style={styles.statusRow}><Text style={styles.statusText}>●  Last sync</Text><Text style={styles.statusValue}>Just now</Text></View></View>
-    <View style={styles.card}><SectionHeader eyebrow="THIS SEMESTER" title="My classes" action="Manage classes" />{classes.map(([name, teacher, grade, color]) => <View style={styles.classRow} key={name}><View style={[styles.classStripe, { backgroundColor: color === 'purple' ? '#8775e9' : color === 'blue' ? '#6b99e8' : color === 'green' ? '#6dc49b' : '#e7aa65' }]} /><View style={styles.classInfo}><Text style={styles.className}>{name}</Text><Text style={styles.classCaption}>{teacher}</Text></View><Text style={styles.grade}>{grade}</Text></View>)}</View>
+    <View style={styles.card}><SectionHeader eyebrow="THIS SEMESTER" title="My classes" action="Manage classes" />{classes.map((item) => <View style={styles.classRow} key={item.id}><View style={[styles.classStripe, { backgroundColor: item.color === 'purple' ? '#8775e9' : item.color === 'blue' ? '#6b99e8' : item.color === 'green' ? '#6dc49b' : '#e7aa65' }]} /><View style={styles.classInfo}><Text style={styles.className}>{item.name}</Text><Text style={styles.classCaption}>{item.teacher} · {item.location}</Text></View><Text style={styles.grade}>{item.grade}</Text></View>)}</View>
   </View>;
 }
 

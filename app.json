@@ -5,8 +5,17 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "splash": { "backgroundColor": "#f7f8fc" },
-    "android": { "package": "com.locallearn.app" },
-    "ios": { "bundleIdentifier": "com.locallearn.app" }
+    "splash": {
+      "backgroundColor": "#f7f8fc"
+    },
+    "android": {
+      "package": "com.locallearn.app"
+    },
+    "ios": {
+      "bundleIdentifier": "com.locallearn.app"
+    },
+    "plugins": [
+      "expo-sqlite"
+    ]
   }
 }

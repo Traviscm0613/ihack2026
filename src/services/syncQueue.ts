@@ -1,3 +1,5 @@
+import { clearPendingChanges, enqueuePendingChange, getPendingChangeCount } from '../db/database';
+
 export type SyncState = 'synced' | 'pending' | 'offline';
 
 export type PendingChange = {
@@ -9,12 +11,10 @@ export type PendingChange = {
 
 // Replace this adapter with AsyncStorage/SQLite when persistence is added.
 export class LocalSyncQueue {
-  private queue: PendingChange[] = [];
-
-  enqueue(change: PendingChange) { this.queue.push(change); }
-  get pendingCount() { return this.queue.length; }
-  clear() { this.queue = []; }
-  get state(): SyncState { return this.queue.length ? 'pending' : 'synced'; }
+  enqueue(change: PendingChange) { return enqueuePendingChange(change); }
+  pendingCount() { return getPendingChangeCount(); }
+  clear() { return clearPendingChanges(); }
+  async state(): Promise<SyncState> { return (await this.pendingCount()) ? 'pending' : 'synced'; }
 }
 
 export const syncQueue = new LocalSyncQueue();

@@ -82,15 +82,27 @@ The client application should:
 - retry interrupted transfers safely; and
 - support role-specific student, teacher, and administrator interfaces.
 
+The client uses Expo SQLite for its local database. The initial schema includes:
+
+- `assignments` for downloaded assignment details and local progress
+- `classes` for the student’s enrolled classes
+- `events` for assignment due dates, class events, and school events
+- `outbox` for pending progress updates and submissions that must be retried
+- `sync_metadata` for the last successful synchronization and server information
+
+Database changes should be introduced through versioned migrations. The client database is a cache and work area, not a replacement for server authorization. The local outbox must use stable IDs so retries do not create duplicate records.
+
+For browser development, Expo SQLite is configured with WebAssembly asset support and cross-origin isolation headers for `SharedArrayBuffer`. Native Android and iOS builds use the platform SQLite implementation.
+
 The first target should be Android phones and tablets because they are commonly available and generally less expensive. iOS support can be added or maintained if the target schools have Apple devices. A desktop client or React Native Web client can be considered later for schools that primarily use computers.
 
 ### Raspberry Pi local server
 
-The Raspberry Pi will host the local API, MySQL database, file storage, and local network services. The React Native application will communicate with the local API using the school’s local Wi-Fi.
+The Raspberry Pi will host the local API, SQLite database, file storage, and local network services. The React Native application will communicate with the local API using the school’s local Wi-Fi. Each client also maintains a local SQLite database for offline reads, unfinished work, and pending changes.
 
-The server will use MySQL for structured application data and a local file-storage directory for uploaded documents, images, and other attachments. The server must remain usable even when the school has no internet service.
+The server will use SQLite for structured application data and a local file-storage directory for uploaded documents, images, and other attachments. SQLite keeps the initial deployment simple, portable, and easy to back up on a Raspberry Pi. The server must remain usable even when the school has no internet service.
 
-The React Native application must not connect directly to MySQL. All database access should go through the local server API, which will handle authentication, authorization, validation, file uploads, and database queries. This keeps database credentials on the Raspberry Pi and prevents client devices from directly modifying application data.
+The React Native application must not connect directly to the Raspberry Pi’s SQLite file. Client-side SQLite is a separate local cache and outbox. All server database access should go through the local server API, which will handle authentication, authorization, validation, file uploads, synchronization, and database queries. This prevents client devices from modifying the server database outside the API.
 
 ### Offline installation and updates
 
@@ -110,15 +122,15 @@ React Native student/teacher apps
    Database  Files   Backups
 ```
 
-The Raspberry Pi is the authoritative source for class rosters, assignments, submissions, grades, feedback, and calendar events. MySQL will store structured records, while uploaded files will be stored on the Raspberry Pi and referenced from the database. A client may temporarily store unfinished work, but completed submissions are not considered submitted until the Raspberry Pi confirms receipt.
+The Raspberry Pi is the authoritative source for class rosters, assignments, submissions, grades, feedback, and calendar events. SQLite will store structured records, while uploaded files will be stored on the Raspberry Pi and referenced from the database. A client may temporarily store unfinished work in its own SQLite database, but completed submissions are not considered submitted until the Raspberry Pi confirms receipt.
 
 ## Core features
 ### 1. Local classroom server
-The Raspberry Pi will host the application server and MySQL database. Devices connected to the school’s local Wi-Fi will use the LMS without internet access.
+The Raspberry Pi will host the application server and SQLite database. Devices connected to the school’s local Wi-Fi will use the LMS without internet access.
 
 **The server should provide:**
 - user authentication and role-based access control
-- MySQL storage for users, classes, assignments, grades, feedback, and calendar events
+- SQLite storage for users, classes, assignments, grades, feedback, and calendar events
 - local file storage for assignment resources and student submissions
 - database backups (if storage permits)
 - basic storage monitoring
@@ -253,7 +265,7 @@ The minimum viable product should include:
 - submission confirmation
 - teacher grading and written feedback
 - assignment status tracking
-- MySQL database running on the Raspberry Pi
+- SQLite database running on the Raspberry Pi and a separate SQLite client cache
 - local database and uploaded-file backups
 
 Native support for additional platforms, advanced quizzes, and large media uploads should be evaluated after the local workflow is reliable. Internet connectivity and cloud synchronization are not requirements for the MVP.
