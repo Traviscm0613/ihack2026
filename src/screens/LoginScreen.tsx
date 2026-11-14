@@ -12,7 +12,7 @@ export function LoginScreen({onLogin}: {onLogin: (session: Session) => void}) {
   const [busy, setBusy] = useState(false);
   return <KeyboardAvoidingView style={{flex: 1, backgroundColor: theme.colors.page}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}><ScrollView contentContainerStyle={{flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 24}} keyboardShouldPersistTaps="handled">
     <View style={{width: '100%', maxWidth: 440, gap: 24}}>
-    <View style={{alignItems: 'center', gap: 10}}><View style={{width: 58, height: 58, borderRadius: 18, backgroundColor: theme.colors.violetSoft, justifyContent: 'center', alignItems: 'center'}}><Text style={{color: theme.colors.violet, fontSize: 25, fontWeight: '800'}}>LL</Text></View><Text style={{fontSize: 30, lineHeight: 38, fontWeight: '800'}}>LocalLearn</Text><Caption>Your classroom, connected.</Caption></View>
+    <View style={{alignItems: 'center', gap: 10}}><View style={{width: 58, height: 58, borderRadius: 18, backgroundColor: theme.colors.violetSoft, justifyContent: 'center', alignItems: 'center'}}><Text style={{color: theme.colors.violet, fontSize: 25, fontWeight: '800'}}>P</Text></View><Text style={{fontSize: 30, lineHeight: 38, fontWeight: '800'}}>Pidea</Text><Caption>Your classroom, connected.</Caption></View>
     <Panel><Text style={{fontSize: 23, lineHeight: 30, fontWeight: '700'}}>Welcome back</Text>
     <Caption>Sign in with the account provided by your school.</Caption>
     <Text>Username</Text>
