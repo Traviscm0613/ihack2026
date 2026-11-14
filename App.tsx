@@ -5,24 +5,57 @@ import { Dashboard } from './src/screens/Dashboard';
 import { NavigationBar } from './src/components/NavigationBar';
 import { theme } from './src/theme';
 import { assignments } from './src/data/mockData';
-import { getDashboardData, initializeDatabase, type DashboardData } from './src/db/database';
+import { applyServerSnapshot, getClassDetail, getDashboardData, initializeDatabase, type DashboardData } from './src/db/database';
 import { DebugScreen } from './src/screens/DebugScreen';
+import { AssignmentsScreen } from './src/screens/AssignmentsScreen';
+import { SubmissionScreen } from './src/screens/SubmissionScreen';
+import { ClassesScreen } from './src/screens/ClassesScreen';
+import { ClassDetailScreen } from './src/screens/ClassDetailScreen';
+import { MaterialViewerScreen } from './src/screens/MaterialViewerScreen';
+import { QuizScreen } from './src/screens/QuizScreen';
+import { getConfiguredServerUrl, fetchServerSnapshot } from './src/services/serverApi';
 import { CalendarScreen } from './src/screens/CalendarScreen';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
+  const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
+  const [selectedQuizId, setSelectedQuizId] = useState<string | null>(null);
+  const [classDetail, setClassDetail] = useState<Awaited<ReturnType<typeof getClassDetail>> | null>(null);
   const [query, setQuery] = useState('');
   const [databaseState, setDatabaseState] = useState<{ loading: boolean; error: string | null; data: DashboardData | null }>({ loading: true, error: null, data: null });
   useEffect(() => {
     let active = true;
-    initializeDatabase().then(() => getDashboardData()).then((data) => {
+    initializeDatabase().then(async () => {
+      const serverUrl = getConfiguredServerUrl();
+      if (serverUrl) {
+        try {
+          await applyServerSnapshot(await fetchServerSnapshot(serverUrl));
+        } catch (error) {
+          console.warn('Raspberry Pi sync unavailable; using the local cache.', error);
+        }
+      }
+      return getDashboardData();
+    }).then((data) => {
       if (active) setDatabaseState({ loading: false, error: null, data });
     }).catch((error) => {
       if (active) setDatabaseState({ loading: false, error: error instanceof Error ? error.message : 'Unable to open the local database.', data: null });
     });
     return () => { active = false; };
   }, []);
-  const refreshDatabase = async () => setDatabaseState({ loading: false, error: null, data: await getDashboardData() });
+  useEffect(() => {
+    if (!selectedClassId) {
+      setClassDetail(null);
+      return;
+    }
+    getClassDetail(selectedClassId).then(setClassDetail).catch(() => setClassDetail(null));
+  }, [selectedClassId, databaseState.data]);
+  const refreshDatabase = async () => {
+    const data = await getDashboardData();
+    setDatabaseState({ loading: false, error: null, data });
+    if (selectedClassId) setClassDetail(await getClassDetail(selectedClassId));
+  };
   const filteredAssignments = useMemo(
     () => (databaseState.data?.assignments ?? assignments).filter((item) => item.title.toLowerCase().includes(query.toLowerCase())),
     [databaseState.data, query],
@@ -45,7 +78,11 @@ export default function App() {
           ) : activeTab === 'Calendar' ? (
             <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} />
           ) : activeTab === 'Developer' ? (
-            <DebugScreen onSaved={refreshDatabase} />
+            <DebugScreen classes={databaseState.data?.classes ?? []} onSaved={refreshDatabase} />
+          ) : activeTab === 'Assignments' ? (
+            selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => setSelectedAssignmentId(null)} onSubmitted={refreshDatabase} /> : <AssignmentsScreen assignments={databaseState.data?.assignments ?? []} classes={databaseState.data?.classes ?? []} onSelect={(assignment) => setSelectedAssignmentId(assignment.id)} />
+          ) : activeTab === 'Classes' ? (
+            selectedAssignmentId && classDetail ? <SubmissionScreen assignment={classDetail.assignments.find((item) => item.id === selectedAssignmentId)!} onBack={() => setSelectedAssignmentId(null)} onSubmitted={refreshDatabase} /> : selectedMaterialId && classDetail ? <MaterialViewerScreen material={classDetail.materials.find((item) => item.id === selectedMaterialId)!} onBack={() => setSelectedMaterialId(null)} /> : selectedQuizId && classDetail ? <QuizScreen quiz={classDetail.quizzes.find((item) => item.id === selectedQuizId)!} onBack={() => setSelectedQuizId(null)} /> : selectedClassId && classDetail?.classRow ? <ClassDetailScreen classRow={classDetail.classRow} assignments={classDetail.assignments} materials={classDetail.materials} quizzes={classDetail.quizzes} onBack={() => setSelectedClassId(null)} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectMaterial={(material) => setSelectedMaterialId(material.id)} onSelectQuiz={(quiz) => setSelectedQuizId(quiz.id)} /> : <ClassesScreen classes={databaseState.data?.classes ?? []} assignments={databaseState.data?.assignments ?? []} onSelect={(classId) => setSelectedClassId(classId)} />
           ) : (
             <View style={styles.placeholder}>
               <Text style={styles.placeholderEyebrow}>{activeTab.toUpperCase()}</Text>

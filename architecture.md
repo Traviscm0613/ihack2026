@@ -2,9 +2,9 @@
 
 The LMS Education Application is a fully offline learning management system (LMS) for schools that cannot depend on internet access.
 
-The application will run on a local network hosted by a Raspberry Pi. Students and teachers will connect to the Raspberry Pi through local Wi-Fi provided by the Raspberry Pi or an attached wireless router. The client application will be built with React Native and will communicate with the local server over the school’s local network.
+The application will run on a local network hosted by a Raspberry Pi. Students and teachers will connect to the Raspberry Pi through local Wi-Fi provided by the Raspberry Pi or an attached wireless router. The client application will be built with React Native and will communicate with the local server over the school's local network.
 
-Internet access is not required for installation, login, classroom use, assignment submission, grading, backups, or normal maintenance. The Raspberry Pi will be the local source of truth for the school’s data.
+Internet access is not required for installation, login, classroom use, assignment submission, grading, backups, or normal maintenance. The Raspberry Pi will be the local source of truth for the school's data.
 
 ## Problem
 Many students and teachers cannot reliably use online classroom platforms because internet access may be unavailable, expensive, slow, or inconsistent. **This makes it difficult to:**
@@ -84,13 +84,29 @@ The client application should:
 
 The client uses Expo SQLite for its local database. The initial schema includes:
 
-- `assignments` for downloaded assignment details and local progress
-- `classes` for the student’s enrolled classes
+- `assignments` for downloaded assignment details, class membership, descriptions, due dates, allowed submission types, and local progress
+- `classes` for the student's enrolled classes
 - `events` for assignment due dates, class events, and school events
+- `submissions` for locally saved file, picture, and scan submissions and their assignment status
+- `quizzes`, `quiz_questions`, and `quiz_attempts` for simple class quizzes and local attempts
 - `outbox` for pending progress updates and submissions that must be retried
 - `sync_metadata` for the last successful synchronization and server information
 
 Database changes should be introduced through versioned migrations. The client database is a cache and work area, not a replacement for server authorization. The local outbox must use stable IDs so retries do not create duplicate records.
+
+The first assignment workflow supports file uploads, pictures, and document scans. Text-editor submissions, quizzes, and other media types remain future additions.
+
+The assignments view groups completion by class. Each class displays a completion ring calculated as completed assignments divided by total assignments for that class. Assignment UI should show only whether work is completed; a work-progress percentage is not part of the student workflow. Developer tools can create local test classes with a name, teacher, location, grade, and color.
+
+The assignments page also displays an overall completion ring calculated across all assignments. The classes page provides a roster view with class details, current grade, assignment totals, and the same per-class completion calculation.
+
+Each class has a dedicated detail view with a description, class materials, current assignments, and past assignments. Past assignment records may include a grade and written teacher feedback. Selecting an assignment from either the assignments page or a class detail view opens the submission flow.
+
+Quizzes support multiple-choice and short-answer questions. Multiple-choice questions can be scored locally. Any quiz attempt containing a short-answer response is stored as ungraded until a teacher reviews it. Class materials open in an in-app reader; file-backed materials can later use their stored URI instead of inline content.
+
+When a student selects work, the file is staged locally but is not yet submitted. A separate confirmation action creates the `submissions` row, marks the assignment completed locally, and adds an outbox record for later transfer to the Raspberry Pi. The selected file is copied into the app’s local documents directory on native builds.
+
+In browser builds, where the native Expo FileSystem directory APIs are unavailable, the selected file data is stored in the local SQLite submission record. Native builds continue to use the app documents directory and store the file path in SQLite.
 
 For browser development, Expo SQLite is configured with WebAssembly asset support and cross-origin isolation headers for `SharedArrayBuffer`. Native Android and iOS builds use the platform SQLite implementation.
 
@@ -98,11 +114,11 @@ The first target should be Android phones and tablets because they are commonly 
 
 ### Raspberry Pi local server
 
-The Raspberry Pi will host the local API, SQLite database, file storage, and local network services. The React Native application will communicate with the local API using the school’s local Wi-Fi. Each client also maintains a local SQLite database for offline reads, unfinished work, and pending changes.
+The Raspberry Pi will host the local API, SQLite database, file storage, and local network services. The React Native application will communicate with the local API using the school's local Wi-Fi. Each client also maintains a local SQLite database for offline reads, unfinished work, and pending changes.
 
 The server will use SQLite for structured application data and a local file-storage directory for uploaded documents, images, and other attachments. SQLite keeps the initial deployment simple, portable, and easy to back up on a Raspberry Pi. The server must remain usable even when the school has no internet service.
 
-The React Native application must not connect directly to the Raspberry Pi’s SQLite file. Client-side SQLite is a separate local cache and outbox. All server database access should go through the local server API, which will handle authentication, authorization, validation, file uploads, synchronization, and database queries. This prevents client devices from modifying the server database outside the API.
+The React Native application must not connect directly to the Raspberry Pi's SQLite file. Client-side SQLite is a separate local cache and outbox. All server database access should go through the local server API, which will handle authentication, authorization, validation, file uploads, synchronization, and database queries. This prevents client devices from modifying the server database outside the API.
 
 ### Offline installation and updates
 
@@ -124,9 +140,11 @@ React Native student/teacher apps
 
 The Raspberry Pi is the authoritative source for class rosters, assignments, submissions, grades, feedback, and calendar events. SQLite will store structured records, while uploaded files will be stored on the Raspberry Pi and referenced from the database. A client may temporarily store unfinished work in its own SQLite database, but completed submissions are not considered submitted until the Raspberry Pi confirms receipt.
 
+Outside developer tools, the React Native client should load the server snapshot from `EXPO_PUBLIC_LMS_SERVER_URL` and use SQLite only as its local cache. Developer tools are intentionally local-only test fixtures until the Raspberry Pi API is available.
+
 ## Core features
 ### 1. Local classroom server
-The Raspberry Pi will host the application server and SQLite database. Devices connected to the school’s local Wi-Fi will use the LMS without internet access.
+The Raspberry Pi will host the application server and SQLite database. Devices connected to the school's local Wi-Fi will use the LMS without internet access.
 
 **The server should provide:**
 - user authentication and role-based access control
@@ -147,7 +165,7 @@ The calendar is one of the primary features of the application. It should show:
 - holidays and planned closures
 - teacher-created reminders
 
-Calendar events should be visible based on the user’s role and class membership. Students should be able to select an event and view related assignment details.
+Calendar events should be visible based on the user's role and class membership. Students should be able to select an event and view related assignment details.
 
   
 
@@ -221,7 +239,7 @@ Students should not be required to own a phone. The application can support seve
 3.  **Student-owned low-cost devices** — Any supported Android or iOS phone or tablet can connect when available.
 4.  **Teacher-assisted submission** — A teacher can upload physical work or enter a submission on behalf of a student when necessary.
 
-Shared devices must support logout, automatic session expiration, and separation of one student’s files from another student’s account.
+Shared devices must support logout, automatic session expiration, and separation of one student's files from another student's account.
 
 ## Local synchronization model
 
@@ -232,7 +250,7 @@ The expected workflow is:
 2. Students connect to the local network and download the assignment.
 3. Students work on the assignment in the React Native application.
 4. If the student temporarily leaves the local network, the application saves progress on the device.
-5. The student reconnects to the school’s local Wi-Fi.
+5. The student reconnects to the school's local Wi-Fi.
 6. The application uploads the completed work to the Raspberry Pi.
 7. The server confirms receipt and updates the assignment status.
 8. The teacher reviews, grades, and returns the work.
@@ -271,7 +289,7 @@ The minimum viable product should include:
 Native support for additional platforms, advanced quizzes, and large media uploads should be evaluated after the local workflow is reliable. Internet connectivity and cloud synchronization are not requirements for the MVP.
 
 ## Open questions
-- Will the Raspberry Pi provide the school’s Wi-Fi directly, or will it connect to an existing local router?
+- Will the Raspberry Pi provide the school's Wi-Fi directly, or will it connect to an existing local router?
 - Will the first release target Android only, or Android and iOS?
 - Should a desktop client be supported for school-owned computers?
 - How many simultaneous users must one Raspberry Pi support?
@@ -285,7 +303,7 @@ Native support for additional platforms, advanced quizzes, and large media uploa
 - How will a school recover data if the Raspberry Pi is damaged or lost?
 - What languages and accessibility features are required?
 - How will devices discover the Raspberry Pi on the local network?
-- How will a new device receive the school’s local server address and security certificate?
+- How will a new device receive the school's local server address and security certificate?
 - How will the application handle a student moving between multiple Raspberry Pi servers?
 
 ## Success criteria
@@ -297,4 +315,4 @@ The first release will be successful if a school can:
 - receive student submissions without internet access
 - grade and return assignments
 - view assignment deadlines on a calendar
-- restore the school’s data from a backup after a server failure.
+- restore the school's data from a backup after a server failure.
