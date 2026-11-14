@@ -8,6 +8,8 @@ import { Assignment, SubmissionType } from '../data/mockData';
 import { createSubmission } from '../db/database';
 import { AppIcon } from '../components/AppIcon';
 import { theme } from '../theme';
+import {LocalServerClient} from '../services/serverApi';
+import {syncQueue} from '../services/syncQueue';
 
 const labels: Record<SubmissionType, string> = { file: 'Upload a file', photo: 'Choose a picture', scan: 'Scan with camera' };
 const icons = { file: faFileArrowUp, photo: faImage, scan: faCamera };
@@ -69,10 +71,12 @@ export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignme
     if (!staged) return;
     try {
       setSaving(true);
+      const client = new LocalServerClient();
       await createSubmission({ assignmentId: assignment.id, ...staged });
+      const result = await syncQueue.flush(client);
       await onSubmitted();
       setStaged(null);
-      setMessage('Submitted locally and marked completed.');
+      setMessage(result.failed.length ? 'Saved on this device. Reconnect and refresh to send to your teacher.' : 'Received by your teacher.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not submit this work.');
     } finally {

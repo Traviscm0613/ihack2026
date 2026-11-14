@@ -1,5 +1,17 @@
 # LocalLearn Raspberry Pi server
 
+## Account-based application workflow
+
+All students and staff now sign in through the application's login screen. The server supplies the role; the role switcher and student developer tab have been removed. Do not bundle shared usernames or passwords in Expo environment variables. `EXPO_PUBLIC_LMS_SERVER_URL=http://photobooth.local:9000` remains the optional server override.
+
+Create the first administrator using the bootstrap command below. Sign in as that administrator, open Workspace, create teacher/student accounts, assign a teacher when creating a class, and enroll students. Teachers see only their own classes and students see only enrolled classes. Each signed-in account uses a separate device cache. Sessions expire after eight hours and are invalidated by logout or a server restart.
+
+Students select a file and confirm submission. The encrypted local outbox retains work until the authenticated file upload, submission receipt, and file attachment all succeed. Teachers open Workspace to download original files, write feedback, assign grades, return work, or request revisions. Student snapshots include authoritative grades and feedback. The teacher workspace also publishes text materials and written-answer quizzes and reviews quiz responses; multiple-choice quiz scoring happens on the server.
+
+Encryption of the device outbox is separate from file delivery. Uploaded file bytes are stored as original files on the Pi and are served only to the owner, assigned teacher, or administrator. They are not encrypted at rest on the Pi. Use HTTPS for deployment if login credentials and submission content need protection on the network. Existing files uploaded by the previous unauthenticated debug uploader have no ownership metadata; submit them again after signing in.
+
+Run the access-control integration test from the repository root with `python3 -m unittest server_src.test_access -v`. It checks login, role and class boundaries, upload/download bytes, grading, feedback, logout, and quiz scoring.
+
 A small Python HTTP API backed by SQLite. It uses only Python's standard library, so no pip packages or database server need to be installed on the Pi. The application API is assigned port 9000. Existing gallery, gameboard, NetworkManager, and dnsmasq services do not need to be changed.
 
 ## Dependencies on the Pi

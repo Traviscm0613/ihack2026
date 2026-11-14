@@ -1,5 +1,6 @@
 import { clearPendingChanges, enqueuePendingChange, getPendingChangeCount, getPendingChanges, recordPendingChangeFailure, removePendingChange } from '../db/database';
 import type { LocalServerClient } from './serverApi';
+import {Platform} from 'react-native';
 
 export type SyncState = 'synced' | 'pending' | 'offline';
 
@@ -38,13 +39,24 @@ export class LocalSyncQueue {
     const failed: SyncResult['failed'] = [];
     let accepted: string[] = [];
     try {
-      const result = await client.sync(pending.map(({ id, type, payload, createdAt }) => ({ id, type, payload, createdAt })));
-      accepted = result.accepted;
-      for (const id of accepted) await removePendingChange(id);
-      for (const rejection of result.rejected ?? []) {
-        failed.push(rejection);
-        await recordPendingChangeFailure(rejection.id, rejection.reason);
+      for (const item of pending) {
+        try {
+          if (item.type !== 'submission') throw new Error('Unsupported operation; retained for review.');
+          const p = item.payload;
+          const form = new FormData();
+          if (Platform.OS === 'web') {
+            const response = await fetch(String(p.content ?? p.uri));
+            form.append('file', await response.blob(), String(p.fileName ?? 'submission.bin'));
+          } else form.append('file', {uri: p.uri, name: p.fileName ?? 'submission.bin', type: p.mimeType ?? 'application/octet-stream'} as unknown as Blob);
+          const file = await client.upload(form);
+          const submission = await client.submit({id: p.id, assignmentId: p.assignmentId});
+          await client.attach(submission.id, file);
+          accepted.push(item.id);
+        } catch(error) {
+          const reason = String(error); failed.push({id: item.id, reason}); await recordPendingChangeFailure(item.id, reason);
+        }
       }
+      for (const id of accepted) await removePendingChange(id);
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'Sync failed.';
       for (const item of pending) {

@@ -1,89 +1,54 @@
-import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {useEffect, useState} from 'react';
+import {View, Text, TextInput, Pressable, Platform, Linking} from 'react-native';
+import {LocalServerClient, type TeacherSubmission} from '../services/serverApi';
+import type {SchoolClass} from '../db/database';
 
-import { createAssignment, getTeacherReviews, saveGrade, type SchoolClass, type TeacherReview } from '../db/database';
-import type { SubmissionType } from '../data/mockData';
-import { getConfiguredServerUrl, LocalServerClient } from '../services/serverApi';
-import { theme } from '../theme';
-
-export function TeacherScreen({ classes, onSaved }: { classes: SchoolClass[]; onSaved: () => Promise<void> }) {
-  const [reviews, setReviews] = useState<TeacherReview[]>([]);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [dueDate, setDueDate] = useState('');
+export function TeacherScreen({classes, onSaved}: {classes: SchoolClass[]; onSaved: () => Promise<void>}) {
+  const [reviews, setReviews] = useState<TeacherSubmission[]>([]);
   const [message, setMessage] = useState('');
-
-  const loadReviews = async () => setReviews(await getTeacherReviews());
-
-  useEffect(() => {
-    void loadReviews();
-  }, []);
-
-  const publish = async () => {
-    const classId = classes[0]?.id;
-    if (!title.trim() || !classId) return;
-    const input = {
-      title: title.trim(), subject: classes[0].name, teacher: 'Demo Teacher',
-      dueDate: dueDate || new Date().toISOString().slice(0, 10), completed: false,
-      tone: 'math' as const, classId, description: description.trim(),
-      submissionTypes: ['file'] as SubmissionType[], grade: null, feedback: null,
-    };
-    const id = await createAssignment(input);
+  const [title, setTitle] = useState('');
+  const [classId, setClassId] = useState(classes[0]?.id ?? '');
+  const [content, setContent] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [quizReviews, setQuizReviews] = useState<Awaited<ReturnType<LocalServerClient['quizReviews']>>>([]);
+  const [grades, setGrades] = useState<Record<string, string>>({});
+  const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const load = async () => {
     try {
-      if (getConfiguredServerUrl()) await new LocalServerClient().createAssignment({ ...input, id });
-    } catch (_) {
-      // The local assignment remains available until the Pi is connected.
-    }
-    setTitle(''); setDescription(''); setDueDate('');
-    setMessage('Assignment saved locally and ready to sync.');
-    await onSaved();
+      const client = new LocalServerClient();
+      const snapshot = await client.snapshot();
+      setReviews((await Promise.all(snapshot.assignments.map(a => client.submissions(a.id)))).flat());
+      setQuizReviews((await Promise.all((snapshot.quizzes ?? []).map(q => client.quizReviews(q.id)))).flat());
+    } catch(e) {setMessage(String(e));}
   };
-
-  const review = async (item: TeacherReview, status: 'graded' | 'returned' | 'revision_requested') => {
-    await saveGrade(item.submission.assignmentId, item.grade ?? 100, item.feedback ?? '', status);
-    try {
-      if (getConfiguredServerUrl()) {
-        await new LocalServerClient().gradeSubmission(item.submission.id, { gradeValue: item.grade ?? 100, feedback: item.feedback ?? '', status });
-      }
-    } catch (_) {
-      // The local review remains queued for synchronization.
-    }
-    setMessage('Review saved locally.');
-    await loadReviews();
-    await onSaved();
-  };
-
-  return (
-    <View style={styles.container}>
-      <Text style={styles.eyebrow}>TEACHER</Text>
-      <Text style={styles.title}>Teaching workspace</Text>
-      <Text style={styles.body}>Create work, monitor submissions, and return feedback. The local queue keeps changes safe until the Pi is reachable.</Text>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>New assignment</Text>
-        <TextInput value={title} onChangeText={setTitle} placeholder="Assignment title" placeholderTextColor="#a0a9bb" style={styles.input} />
-        <TextInput value={description} onChangeText={setDescription} placeholder="Instructions" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.multiline]} />
-        <TextInput value={dueDate} onChangeText={setDueDate} placeholder="Due date (YYYY-MM-DD)" placeholderTextColor="#a0a9bb" style={styles.input} />
-        <Pressable style={styles.button} onPress={publish}><Text style={styles.buttonText}>Publish assignment</Text></Pressable>
-        {message ? <Text style={styles.message}>{message}</Text> : null}
-      </View>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Submission review</Text>
-        {reviews.length ? reviews.map((item) => (
-          <View key={item.submission.id} style={styles.review}>
-            <Text style={styles.reviewTitle}>{item.assignmentTitle}</Text>
-            <Text style={styles.muted}>{item.studentName} · {item.submission.fileName}</Text>
-            <View style={styles.actionRow}>
-              <Pressable style={styles.secondary} onPress={() => review(item, 'graded')}><Text style={styles.secondaryText}>Grade</Text></Pressable>
-              <Pressable style={styles.secondary} onPress={() => review(item, 'revision_requested')}><Text style={styles.secondaryText}>Request revision</Text></Pressable>
-              <Pressable style={styles.secondary} onPress={() => review(item, 'returned')}><Text style={styles.secondaryText}>Return</Text></Pressable>
-            </View>
-          </View>
-        )) : <Text style={styles.muted}>No locally cached submissions yet. New Pi submissions will appear here after sync.</Text>}
-      </View>
-    </View>
-  );
+  useEffect(() => {void load();}, []);
+  return <View style={{gap: 16}}>
+    <Text style={{fontSize: 26}}>Teaching workspace</Text>
+    {classes.map(c => <Pressable key={c.id} onPress={() => setClassId(c.id)}><Text>{classId === c.id ? '✓ ' : ''}{c.name}</Text></Pressable>)}
+    <TextInput placeholder="Assignment title" value={title} onChangeText={setTitle}/>
+    <Pressable onPress={async () => {try {await new LocalServerClient().createAssignment({classId, title}); setTitle(''); setMessage('Published'); await onSaved();} catch(e){setMessage(String(e));}}}><Text>Publish assignment</Text></Pressable>
+    <Pressable onPress={load}><Text>Refresh submissions</Text></Pressable>
+    <TextInput placeholder="Material text or quiz question" multiline value={content} onChangeText={setContent}/>
+    <TextInput placeholder="Correct answer (leave empty for a written-answer quiz)" value={answer} onChangeText={setAnswer}/>
+    <Pressable onPress={async () => {try {await new LocalServerClient().createMaterial({classId, title, content}); setMessage('Material published'); await onSaved();} catch(e){setMessage(String(e));}}}><Text>Publish as class material</Text></Pressable>
+    <Pressable onPress={async () => {try {await new LocalServerClient().createQuiz({classId, title, questions: [{prompt: content, type: 'short_answer', correctAnswer: answer || null, points: 1}]}); setMessage('Written-answer quiz published'); await onSaved();} catch(e){setMessage(String(e));}}}><Text>Publish written-answer quiz</Text></Pressable>
+    <Text>{message}</Text>
+    {reviews.map(s => <View key={s.id} style={{padding: 16, gap: 12, borderWidth: 1, borderColor: '#ddd'}}>
+      <Text>{s.studentName} · {s.status} · {s.gradeValue ?? 'Ungraded'}</Text>
+      {s.files.map(f => <Pressable key={f.id} onPress={async () => {try {
+        if (Platform.OS === 'web') {
+          const blob = await new LocalServerClient().file(f.id);
+          const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = f.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } else {await Linking.openURL(await new LocalServerClient().downloadFile(f.id, f.name));}
+      } catch(e){setMessage(String(e));}}}><Text style={{color: 'blue'}}>Open {f.name}</Text></Pressable>)}
+      <Text>{s.feedback.join('\n')}</Text>
+      <TextInput placeholder="Grade (0–100)" keyboardType="numeric" value={grades[s.id] ?? ''} onChangeText={v => setGrades({...grades, [s.id]: v})}/>
+      <TextInput placeholder="Feedback" multiline value={feedback[s.id] ?? ''} onChangeText={v => setFeedback({...feedback, [s.id]: v})}/>
+      {(['graded', 'returned', 'revision_requested'] as const).map(status => <Pressable key={status} onPress={async () => {try {
+        await new LocalServerClient().gradeSubmission(s.id, {status, gradeValue: grades[s.id] ? Number(grades[s.id]) : undefined, feedback: feedback[s.id] ?? ''}); await load(); setMessage('Review saved');
+      } catch(e){setMessage(String(e));}}}><Text>{status.replace(/_/g, ' ')}</Text></Pressable>)}
+    </View>)}
+    <Text>Quiz review</Text>
+    {quizReviews.map(q => <View key={q.id} style={{gap: 10}}><Text>{q.studentName} · {q.status} · {q.score ?? 'Ungraded'}</Text><Text>{Object.values(q.answers).join('\n')}</Text><TextInput placeholder="Score" keyboardType="numeric" value={grades[q.id] ?? ''} onChangeText={v => setGrades({...grades, [q.id]: v})}/><Pressable onPress={async () => {try {await new LocalServerClient().gradeQuiz(q.id, Number(grades[q.id])); await load();} catch(e){setMessage(String(e));}}}><Text>Save quiz score</Text></Pressable></View>)}
+  </View>;
 }
-
-const styles = StyleSheet.create({
-  container: { paddingTop: 8 }, eyebrow: { color: theme.colors.violet, fontSize: 10, fontWeight: '800', letterSpacing: 1.1 }, title: { color: theme.colors.ink, fontSize: 27, fontWeight: '800', marginTop: 8 }, body: { color: theme.colors.muted, fontSize: 13, lineHeight: 20, marginTop: 8, marginBottom: 18 }, card: { backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 13, padding: 17, marginBottom: 14 }, cardTitle: { color: theme.colors.ink, fontSize: 15, fontWeight: '800', marginBottom: 12 }, input: { borderWidth: 1, borderColor: theme.colors.line, borderRadius: 8, color: theme.colors.ink, fontSize: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10 }, multiline: { minHeight: 68, textAlignVertical: 'top' }, button: { alignItems: 'center', backgroundColor: theme.colors.violet, borderRadius: 8, paddingVertical: 11 }, buttonText: { color: theme.colors.white, fontSize: 11, fontWeight: '800' }, message: { color: theme.colors.green, fontSize: 11, marginTop: 10 }, muted: { color: theme.colors.muted, fontSize: 10 }, review: { borderTopWidth: 1, borderTopColor: theme.colors.line, paddingVertical: 12 }, reviewTitle: { color: theme.colors.ink, fontSize: 12, fontWeight: '800', marginBottom: 3 }, actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }, secondary: { borderWidth: 1, borderColor: theme.colors.line, borderRadius: 8, padding: 9 }, secondaryText: { color: theme.colors.violet, fontSize: 10, fontWeight: '800' },
-});

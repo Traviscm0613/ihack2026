@@ -3,3 +3,7 @@ node_modules/
 .expo-export/
 dist/
 *.log
+__pycache__/
+*.pyc
+server_data/
+.env

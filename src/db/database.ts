@@ -2,6 +2,7 @@ import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
 import nacl from 'tweetnacl';
 import { assignments as seedAssignments, classes as seedClasses, type Assignment, type SubmissionType } from '../data/mockData';
 import { isProtectedJson, protectJson, unprotectJson } from '../services/dataProtection';
+import {LocalServerClient} from '../services/serverApi';
 
 export type SchoolClass = { id: string; name: string; sectionName: string | null; teacher: string; location: string; grade: string; color: 'purple' | 'blue' | 'green' | 'orange'; description: string };
 export type ClassMaterial = { id: string; classId: string; title: string; type: 'syllabus' | 'textbook' | 'resource'; uri: string | null; content: string };
@@ -19,10 +20,17 @@ export type PendingOutboxChange = { id: string; type: string; payload: Record<st
 
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
+let databaseName = 'locallearn.db';
+export async function selectUserDatabase(userId: string) {
+  if (database) await database.closeAsync();
+  database = null;
+  databasePromise = null;
+  databaseName = `locallearn-${userId.replace(/[^a-zA-Z0-9-]/g, '_')}.db`;
+}
 
 async function getDatabase() {
   if (database) return database;
-  if (!databasePromise) databasePromise = openDatabaseAsync('locallearn.db');
+  if (!databasePromise) databasePromise = openDatabaseAsync(databaseName);
   database = await databasePromise;
   return database;
 }
@@ -148,8 +156,7 @@ export async function initializeDatabase() {
   await ensureQuizAttemptColumns(db);
   await ensureOutboxColumns(db);
 
-  if (process.env.NODE_ENV !== 'production') await seedDatabase(db);
-  await seedLocalUsers(db);
+  // Authenticated accounts start with the authoritative server snapshot.
   await syncAssignmentEvents(db);
 }
 
@@ -280,7 +287,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   return { assignments: assignmentRows.map(mapAssignment), classes: classRows, event: events[0] ?? null, events, quizzes, completedQuizIds: completedQuizRows.map((row) => row.quizId) };
 }
 
-export async function applyServerSnapshot(snapshot: { assignments: Assignment[]; classes: SchoolClass[]; events: CalendarEvent[] }) {
+export async function applyServerSnapshot(snapshot: { assignments: Assignment[]; classes: SchoolClass[]; events: CalendarEvent[]; quizzes?: Quiz[]; materials?: ClassMaterial[] }) {
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     for (const item of snapshot.classes) await db.runAsync('INSERT OR REPLACE INTO classes (id, name, section_name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.name, item.sectionName ?? null, item.teacher, item.location, item.grade, item.color, item.description);
@@ -288,6 +295,11 @@ export async function applyServerSnapshot(snapshot: { assignments: Assignment[];
     await syncAssignmentEvents(db);
     for (const item of snapshot.events) await db.runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?, 0)', item.id, item.title, item.date, item.time ?? null, item.notes ?? '', item.kind, item.assignmentId ?? null);
     await db.runAsync('INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)', 'last_sync', new Date().toISOString());
+    for (const q of snapshot.quizzes ?? []) {
+      await db.runAsync('INSERT OR REPLACE INTO quizzes VALUES (?, ?, ?, ?, ?, ?)', q.id, q.classId, q.title, q.description, q.dueDate, new Date().toISOString());
+      for (const item of q.questions) await db.runAsync('INSERT OR REPLACE INTO quiz_questions VALUES (?, ?, ?, ?, ?, ?, ?)', item.id, q.id, item.prompt, item.type, JSON.stringify(item.options), null, item.points);
+    }
+    for (const m of snapshot.materials ?? []) await db.runAsync('INSERT OR REPLACE INTO class_materials (id, class_id, title, type, uri, content) VALUES (?, ?, ?, ?, ?, ?)', m.id, m.classId, m.title, m.type, m.uri, m.content);
   });
 }
 
@@ -371,9 +383,10 @@ export async function getQuizAttempt(quizId: string) {
 }
 
 export async function submitQuizAttempt(quiz: Quiz, answers: Record<string, string>) {
+  const serverAttempt = await new LocalServerClient().attemptQuiz(quiz.id, answers);
   const existing = await getQuizAttempt(quiz.id);
   if (existing) return { ...existing, alreadySubmitted: true as const };
-  const score = quiz.questions.reduce((total, question) => total + (question.type === 'multiple_choice' && answers[question.id] === question.correctAnswer ? question.points : 0), 0);
+  const score = serverAttempt.score ?? 0;
   const hasShortAnswer = quiz.questions.some((question) => question.type === 'short_answer');
   const id = `attempt-${Date.now()}`;
   const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
@@ -405,7 +418,7 @@ export async function createSubmission(input: Omit<Submission, 'id' | 'createdAt
     const protectedContent = input.content === null || input.content === undefined ? null : protectJson({ content: input.content });
     await db.runAsync('INSERT INTO submissions (id, assignment_id, kind, uri, file_name, mime_type, size, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.assignmentId, input.kind, input.uri, input.fileName, input.mimeType, input.size ?? null, protectedContent, createdAt, 'completed');
     await db.runAsync('UPDATE assignments SET completed = 1, progress = 100, status = ? WHERE id = ?', 'Completed', input.assignmentId);
-    await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `submission-${id}`, 'submission', protectJson({ id, assignmentId: input.assignmentId, kind: input.kind, uri: input.uri, content: input.content ?? null }), createdAt);
+    await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `submission-${id}`, 'submission', protectJson({ id, assignmentId: input.assignmentId, kind: input.kind, uri: input.uri, fileName: input.fileName, mimeType: input.mimeType, content: input.content ?? null }), createdAt);
   });
   return id;
 }

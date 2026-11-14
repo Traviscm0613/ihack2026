@@ -1,11 +1,14 @@
 import type { Assignment } from '../data/mockData';
-import type { CalendarEvent, SchoolClass } from '../db/database';
+import type { CalendarEvent, SchoolClass, Quiz, ClassMaterial } from '../db/database';
 import { configureDataProtection } from './dataProtection';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export type ServerSnapshot = {
   assignments: Assignment[];
   classes: SchoolClass[];
   events: CalendarEvent[];
+  quizzes?: Quiz[];
+  materials?: ClassMaterial[];
 };
 
 export type UserRole = 'student' | 'teacher' | 'administrator';
@@ -96,7 +99,7 @@ export class LocalServerClient {
       ...init,
       headers: {
         Accept: 'application/json',
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(init.headers ?? {}),
       },
@@ -117,7 +120,7 @@ export class LocalServerClient {
     });
     this.token = session.token;
     activeServerToken = session.token;
-    configureDataProtection(session.token);
+    configureDataProtection(`${session.user.id}:${password}`);
     return session;
   }
 
@@ -126,6 +129,26 @@ export class LocalServerClient {
     this.setToken(null);
   }
   health() { return this.request<ServerHealth>('/api/admin/health'); }
+  snapshot() { return this.request<ServerSnapshot>('/api/snapshot'); }
+  createQuiz(input: Record<string, unknown>) { return this.request('/api/quizzes', {method: 'POST', body: JSON.stringify(input)}); }
+  createMaterial(input: Record<string, unknown>) { return this.request('/api/materials', {method: 'POST', body: JSON.stringify(input)}); }
+  quizReviews(id: string) { return this.request<{id: string; studentName: string; answers: Record<string, string>; status: string; score: number | null}[]>(`/api/quizzes/${id}/attempts`); }
+  gradeQuiz(id: string, score: number) { return this.request(`/api/quiz-attempts/${id}/grade`, {method: 'POST', body: JSON.stringify({score})}); }
+  attemptQuiz(quizId: string, answers: Record<string, string>) { return this.request<{id: string; score: number | null; status: string}>('/api/quiz-attempts', {method: 'POST', body: JSON.stringify({quizId, answers})}); }
+  upload(form: FormData) { return this.request<{id: string; storageKey: string}>('/api/files/upload', {method: 'POST', body: form}); }
+  submit(input: Record<string, unknown>) { return this.request<{id: string}>('/api/submissions', {method: 'POST', body: JSON.stringify(input)}); }
+  attach(id: string, file: Record<string, unknown>) { return this.request(`/api/submissions/${id}/files`, {method: 'POST', body: JSON.stringify(file)}); }
+  async file(id: string) {
+    const response = await fetch(`${this.baseUrl}/api/files/${id}`, {headers: {Authorization: `Bearer ${this.token}`}});
+    if (!response.ok) throw new Error(`File access failed (${response.status})`);
+    return response.blob();
+  }
+  async downloadFile(id: string, name: string) {
+    const uri = `${FileSystem.cacheDirectory}${id}-${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const result = await FileSystem.downloadAsync(`${this.baseUrl}/api/files/${id}`, uri, {headers: {Authorization: `Bearer ${this.token}`}});
+    if (result.status !== 200) throw new Error('File download failed');
+    return FileSystem.getContentUriAsync(result.uri);
+  }
   adminOverview() { return this.request<AdminOverview>('/api/admin/overview'); }
 
   createUser(input: { username: string; displayName: string; password: string; role: UserRole }) {

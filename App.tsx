@@ -13,16 +13,28 @@ import { ClassesScreen } from './src/screens/ClassesScreen';
 import { ClassDetailScreen } from './src/screens/ClassDetailScreen';
 import { MaterialViewerScreen } from './src/screens/MaterialViewerScreen';
 import { QuizScreen } from './src/screens/QuizScreen';
-import { getConfiguredServerCredentials, getConfiguredServerUrl, fetchServerSnapshot, LocalServerClient, resolveServerUrl } from './src/services/serverApi';
+import { getConfiguredServerUrl, fetchServerSnapshot, LocalServerClient, resolveServerUrl } from './src/services/serverApi';
 import { CalendarScreen } from './src/screens/CalendarScreen';
 import { AdministratorScreen } from './src/screens/AdministratorScreen';
 import { TeacherScreen } from './src/screens/TeacherScreen';
 import { type UserRole } from './src/services/serverApi';
 import { syncQueue } from './src/services/syncQueue';
+import {LoginScreen} from './src/screens/LoginScreen';
+import type {Session} from './src/services/serverApi';
 
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  if (!session) return <LoginScreen onLogin={setSession}/>;
+  return <AuthenticatedApp key={session.user.id} session={session} onLogout={() => {
+    const client = new LocalServerClient();
+    void client.logout().catch(() => {});
+    client.setToken(null); setSession(null);
+  }}/>;
+}
+
+function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () => void}) {
   const [activeTab, setActiveTab] = useState('Dashboard');
-  const [role, setRole] = useState<UserRole>('student');
+  const role = session.user.role;
   const [themeVersion, setThemeVersion] = useState(0);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
@@ -39,13 +51,8 @@ export default function App() {
       const serverUrl = await resolveServerUrl();
       if (serverUrl) {
         try {
-          const credentials = getConfiguredServerCredentials();
-          let authenticated = false;
+          let authenticated = true;
           const client = new LocalServerClient(serverUrl);
-          if (credentials) {
-            await client.login(credentials.username, credentials.password);
-            authenticated = true;
-          }
           await applyServerSnapshot(await fetchServerSnapshot(serverUrl));
           if (authenticated) await syncQueue.flush(new LocalServerClient(serverUrl));
         } catch (error) {
@@ -71,6 +78,10 @@ export default function App() {
     getClassDetail(selectedClassId).then(setClassDetail).catch(() => setClassDetail(null));
   }, [selectedClassId, databaseState.data]);
   const refreshDatabase = async () => {
+    try {
+      await syncQueue.flush(new LocalServerClient());
+      await applyServerSnapshot(await new LocalServerClient().snapshot());
+    } catch(error) {console.warn('Offline; showing this account’s cache', error);}
     const data = await getDashboardData();
     setDatabaseState({ loading: false, error: null, data });
     setPendingChanges(await getPendingChangeCount());
@@ -90,8 +101,10 @@ export default function App() {
             <Text style={styles.brand}>LocalLearn</Text>
             <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
-          <View style={styles.headerTools}><Pressable style={styles.roleButton} onPress={() => { const next = role === 'student' ? 'teacher' : role === 'teacher' ? 'administrator' : 'student'; setRole(next); setActiveTab(next === 'student' ? 'Dashboard' : 'Workspace'); }}><Text style={styles.roleLabel}>{role}</Text></Pressable><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
+          <View style={styles.headerTools}><View style={styles.roleButton}><Text style={styles.roleLabel}>{role}</Text></View><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
         </View>
+        <Pressable accessibilityRole="button" onPress={onLogout}><Text>Sign out · {session.user.displayName}</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={() => void refreshDatabase()}><Text>Refresh grades and sync work</Text></Pressable>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
             selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => { setSelectedAssignmentId(null); setActiveTab('Assignments'); }} onSubmitted={refreshDatabase} /> : <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} pendingChanges={pendingChanges} serverUrl={getConfiguredServerUrl()} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectClass={(classId) => { setSelectedClassId(classId); setActiveTab('Classes'); }} onViewAllAssignments={() => setActiveTab('Assignments')} />
