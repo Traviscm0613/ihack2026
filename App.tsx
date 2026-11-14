@@ -141,7 +141,7 @@ function AuthenticatedApp({session, onLogout, logoutError}: {session: Session; o
       <View style={styles.app}>
         <View style={styles.header}>
           <View style={styles.headerTitle}>
-            <Text style={styles.brand}>LocalLearn</Text>
+            <Text style={styles.brand}>Pidea</Text>
             <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
           <View style={styles.headerTools}><View style={styles.roleButton}><Text style={styles.roleLabel}>{role}</Text></View><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>{connectionStatus}</Text></View></View>
