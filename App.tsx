@@ -81,7 +81,7 @@ export default function App() {
       <StatusBar style="dark" />
       <View key={themeVersion} style={styles.app}>
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerTitle}>
             <Text style={styles.brand}>LocalLearn</Text>
             <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
@@ -113,8 +113,9 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: theme.colors.page },
   app: { flex: 1 },
-  header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 },
-  headerTools: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', position: 'relative', zIndex: 10 },
+  headerTitle: { alignItems: 'center' },
+  headerTools: { position: 'absolute', right: 20, flexDirection: 'row', alignItems: 'center', gap: 8 },
   roleButton: { borderWidth: 1, borderColor: theme.colors.violet, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
   roleLabel: { color: theme.colors.violet, fontSize: 9, fontWeight: '800', textTransform: 'uppercase' },
   themePicker: { position: 'relative', zIndex: 20 },
