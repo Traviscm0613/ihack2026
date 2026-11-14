@@ -1,4 +1,5 @@
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
+import { Platform } from 'react-native';
 import { assignments as seedAssignments, classes as seedClasses, type Assignment, type SubmissionType } from '../data/mockData';
 import { isProtectedJson, protectJson, unprotectJson } from '../services/dataProtection';
 import {LocalServerClient} from '../services/serverApi';
@@ -19,6 +20,7 @@ export type PendingOutboxChange = { id: string; type: string; payload: Record<st
 
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
+let initializationPromise: Promise<void> | null = null;
 let databaseName = 'locallearn.db';
 let accountGeneration = 0;
 export function accountScope() {return `${databaseName}:${accountGeneration}`;}
@@ -29,6 +31,7 @@ export async function selectUserDatabase(userId: string) {
   if (database) await database.closeAsync();
   database = null;
   databasePromise = null;
+  initializationPromise = null;
   databaseName = `locallearn-${userId.replace(/[^a-zA-Z0-9-]/g, '_')}.db`;
 }
 
@@ -40,9 +43,20 @@ async function getDatabase() {
 }
 
 export async function initializeDatabase() {
+  if (initializationPromise) return initializationPromise;
+  initializationPromise = initializeDatabaseImpl();
+  try {
+    await initializationPromise;
+  } catch (error) {
+    initializationPromise = null;
+    throw error;
+  }
+}
+
+async function initializeDatabaseImpl() {
   const db = await getDatabase();
   await db.execAsync(`
-    PRAGMA journal_mode = WAL;
+    PRAGMA journal_mode = ${Platform.OS === 'web' ? 'DELETE' : 'WAL'};
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS assignments (
       id TEXT PRIMARY KEY NOT NULL,
