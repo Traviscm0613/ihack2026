@@ -40,9 +40,14 @@ export default function App() {
       if (serverUrl) {
         try {
           const credentials = getConfiguredServerCredentials();
-          if (credentials) await new LocalServerClient(serverUrl).login(credentials.username, credentials.password);
+          let authenticated = false;
+          const client = new LocalServerClient(serverUrl);
+          if (credentials) {
+            await client.login(credentials.username, credentials.password);
+            authenticated = true;
+          }
           await applyServerSnapshot(await fetchServerSnapshot(serverUrl));
-          await syncQueue.flush(new LocalServerClient(serverUrl));
+          if (authenticated) await syncQueue.flush(new LocalServerClient(serverUrl));
         } catch (error) {
           console.warn('Raspberry Pi sync unavailable; using the local cache.', error);
         }

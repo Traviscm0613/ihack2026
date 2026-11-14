@@ -323,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
         message = BytesParser(policy=policy.default).parsebytes((f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n").encode() + raw)
         item = next((part for part in message.iter_parts() if part.get_param("name", header="content-disposition") == "file"), None)
         if item is None: self.error(HTTPStatus.BAD_REQUEST, "A file field is required"); return
-        file_id, target = uid(), self.service.settings.files_dir / file_id; digest, size = hashlib.sha256(), 0
+        file_id = uid(); target = self.service.settings.files_dir / file_id; digest, size = hashlib.sha256(), 0
         content = item.get_payload(decode=True) or b""
         with target.open("wb") as output:
             output.write(content)

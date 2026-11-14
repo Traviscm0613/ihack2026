@@ -191,7 +191,9 @@ export async function resolveServerUrl() {
 }
 
 export async function fetchServerSnapshot(serverUrl: string): Promise<ServerSnapshot> {
-  const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/snapshot`);
+  const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/snapshot`, {
+    headers: activeServerToken ? { Authorization: `Bearer ${activeServerToken}` } : undefined,
+  });
   if (!response.ok) throw new Error(`Local server returned ${response.status}.`);
   return response.json() as Promise<ServerSnapshot>;
 }

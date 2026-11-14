@@ -60,7 +60,7 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
           }
           const response = await fetch(`${url}/api/files/upload`, { method: 'POST', headers: { Accept: 'application/json' }, body: form });
           const responseBody = await response.text();
-          if (!response.ok) throw new Error(`The Pi returned ${response.status}${responseBody ? `: ${responseBody.slice(0, 180)}` : '.'}`);
+          if (!response.ok) throw new Error(`The Pi returned HTTP ${response.status}${responseBody ? `: ${responseBody.slice(0, 180)}` : '.'}`);
           setFileMessage(`${selectedFile.name} sent successfully through ${url}. Pi response: ${responseBody || `HTTP ${response.status}`}`);
           return;
         } catch (error) {
