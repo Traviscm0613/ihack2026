@@ -108,6 +108,10 @@ export async function updateEvent(id: string, input: Omit<CalendarEvent, 'id'>) 
   await (await getDatabase()).runAsync('UPDATE events SET title = ?, event_date = ?, event_time = ?, notes = ?, kind = ?, assignment_id = ? WHERE id = ?', input.title, input.date, input.time ?? '09:00', input.notes ?? input.title, input.kind, input.assignmentId ?? null, id);
 }
 
+export async function deleteEvent(id: string) {
+  await (await getDatabase()).runAsync('DELETE FROM events WHERE id = ?', id);
+}
+
 export async function updateAssignmentProgress(id: string, progress: number, status: Assignment['status']) {
   const db = await getDatabase();
   await db.runAsync('UPDATE assignments SET progress = ?, status = ? WHERE id = ?', progress, status, id);
