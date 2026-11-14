@@ -1,4 +1,3 @@
-
 # LMS Education Application
 
 The LMS Education Application is a fully offline learning management system (LMS) for schools that cannot depend on internet access.
@@ -87,9 +86,11 @@ The first target should be Android phones and tablets because they are commonly 
 
 ### Raspberry Pi local server
 
-The Raspberry Pi will host the local API, database, file storage, and local network services. The React Native application will communicate with the server using the school’s local Wi-Fi.
+The Raspberry Pi will host the local API, MySQL database, file storage, and local network services. The React Native application will communicate with the local API using the school’s local Wi-Fi.
 
-The server may be implemented as a lightweight local service with a relational database and a file-storage directory. The server must remain usable even when the school has no internet service.
+The server will use MySQL for structured application data and a local file-storage directory for uploaded documents, images, and other attachments. The server must remain usable even when the school has no internet service.
+
+The React Native application must not connect directly to MySQL. All database access should go through the local server API, which will handle authentication, authorization, validation, file uploads, and database queries. This keeps database credentials on the Raspberry Pi and prevents client devices from directly modifying application data.
 
 ### Offline installation and updates
 
@@ -109,15 +110,16 @@ React Native student/teacher apps
    Database  Files   Backups
 ```
 
-The Raspberry Pi is the authoritative source for class rosters, assignments, submissions, grades, feedback, and calendar events. A client may temporarily store unfinished work, but completed submissions are not considered submitted until the Raspberry Pi confirms receipt.
+The Raspberry Pi is the authoritative source for class rosters, assignments, submissions, grades, feedback, and calendar events. MySQL will store structured records, while uploaded files will be stored on the Raspberry Pi and referenced from the database. A client may temporarily store unfinished work, but completed submissions are not considered submitted until the Raspberry Pi confirms receipt.
 
 ## Core features
 ### 1. Local classroom server
-The Raspberry Pi will host the application server and database. Devices connected to the school’s local Wi-Fi will use the LMS without internet access.
+The Raspberry Pi will host the application server and MySQL database. Devices connected to the school’s local Wi-Fi will use the LMS without internet access.
 
 **The server should provide:**
 - user authentication and role-based access control
-- local storage for assignments and submissions
+- MySQL storage for users, classes, assignments, grades, feedback, and calendar events
+- local file storage for assignment resources and student submissions
 - database backups (if storage permits)
 - basic storage monitoring
 - safe shutdown and recovery procedures.
@@ -251,7 +253,8 @@ The minimum viable product should include:
 - submission confirmation
 - teacher grading and written feedback
 - assignment status tracking
-- local database and file backups
+- MySQL database running on the Raspberry Pi
+- local database and uploaded-file backups
 
 Native support for additional platforms, advanced quizzes, and large media uploads should be evaluated after the local workflow is reliable. Internet connectivity and cloud synchronization are not requirements for the MVP.
 
