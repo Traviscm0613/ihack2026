@@ -68,7 +68,7 @@ export default function App() {
         <View style={styles.header}>
           <View>
             <Text style={styles.brand}>LocalLearn</Text>
-            <Text style={styles.breadcrumb}>My school  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
+            <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
           <View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View>
         </View>
@@ -76,7 +76,7 @@ export default function App() {
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
             <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} />
           ) : activeTab === 'Calendar' ? (
-            <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} />
+            <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} onOpenAssignment={(assignmentId) => { setSelectedAssignmentId(assignmentId); setActiveTab('Assignments'); }} />
           ) : activeTab === 'Developer' ? (
             <DebugScreen classes={databaseState.data?.classes ?? []} onSaved={refreshDatabase} />
           ) : activeTab === 'Assignments' ? (
