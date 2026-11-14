@@ -64,13 +64,21 @@ export const DEFAULT_RASPBERRY_PI_URLS = [
 ];
 
 let activeServerToken: string | null = null;
+let activeServerUrl: string | null = null;
+
+function normalizeServerUrl(value: string) {
+  const trimmed = value.replace(/\/$/, '');
+  return /^https?:\/\/[^/:]+$/.test(trimmed) || /^https?:\/\/\[[^\]]+\]$/.test(trimmed)
+    ? `${trimmed}:9000`
+    : trimmed;
+}
 
 export class LocalServerClient {
   readonly baseUrl: string;
   private token: string | null;
 
-  constructor(baseUrl = getConfiguredServerUrl() ?? '', token: string | null = activeServerToken) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+  constructor(baseUrl = activeServerUrl ?? getConfiguredServerUrl() ?? '', token: string | null = activeServerToken) {
+    this.baseUrl = normalizeServerUrl(baseUrl);
     this.token = token;
   }
 
@@ -146,11 +154,11 @@ export class LocalServerClient {
 }
 
 export function getConfiguredServerUrl() {
-  return process.env.EXPO_PUBLIC_LMS_SERVER_URL?.replace(/\/$/, '') ?? DEFAULT_RASPBERRY_PI_URL;
+  return activeServerUrl ?? (process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : DEFAULT_RASPBERRY_PI_URL);
 }
 
 export function getConfiguredServerUrls() {
-  const configured = process.env.EXPO_PUBLIC_LMS_SERVER_URL?.replace(/\/$/, '');
+  const configured = process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : undefined;
   return configured ? [configured] : DEFAULT_RASPBERRY_PI_URLS;
 }
 
@@ -160,8 +168,28 @@ export function getConfiguredServerCredentials() {
   return username && password ? { username, password } : null;
 }
 
+export async function resolveServerUrl() {
+  const candidates = getConfiguredServerUrls();
+  for (const candidate of candidates) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1800);
+    try {
+      const response = await fetch(`${candidate}/api/admin/health`, { signal: controller.signal });
+      if (response.ok) {
+        activeServerUrl = candidate;
+        return candidate;
+      }
+    } catch (_) {
+      // Try the next Photobooth hostname/address.
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return null;
+}
+
 export async function fetchServerSnapshot(serverUrl: string): Promise<ServerSnapshot> {
-  const response = await fetch(`${serverUrl}/api/snapshot`);
+  const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/snapshot`);
   if (!response.ok) throw new Error(`Local server returned ${response.status}.`);
   return response.json() as Promise<ServerSnapshot>;
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { getLocalUsers, saveLocalUser, setLocalUserActive, type LocalUser } from '../db/database';
-import { LocalServerClient, type UserRole } from '../services/serverApi';
+import { getConfiguredServerUrl, LocalServerClient, type UserRole } from '../services/serverApi';
 import { theme } from '../theme';
 
 export function AdministratorScreen({ onSaved }: { onSaved: () => Promise<void> }) {
@@ -24,7 +24,7 @@ export function AdministratorScreen({ onSaved }: { onSaved: () => Promise<void> 
     if (!username.trim() || !displayName.trim()) return;
     await saveLocalUser({ username: username.trim(), displayName: displayName.trim(), role });
     try {
-      if (process.env.EXPO_PUBLIC_LMS_SERVER_URL) {
+      if (getConfiguredServerUrl()) {
           await new LocalServerClient().createUser({ username: username.trim(), displayName: displayName.trim(), password, role });
       }
     } catch (_) {

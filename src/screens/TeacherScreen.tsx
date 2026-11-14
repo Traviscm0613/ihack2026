@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { createAssignment, getTeacherReviews, saveGrade, type SchoolClass, type TeacherReview } from '../db/database';
 import type { SubmissionType } from '../data/mockData';
-import { LocalServerClient } from '../services/serverApi';
+import { getConfiguredServerUrl, LocalServerClient } from '../services/serverApi';
 import { theme } from '../theme';
 
 export function TeacherScreen({ classes, onSaved }: { classes: SchoolClass[]; onSaved: () => Promise<void> }) {
@@ -30,7 +30,7 @@ export function TeacherScreen({ classes, onSaved }: { classes: SchoolClass[]; on
     };
     const id = await createAssignment(input);
     try {
-      if (process.env.EXPO_PUBLIC_LMS_SERVER_URL) await new LocalServerClient().createAssignment({ ...input, id });
+      if (getConfiguredServerUrl()) await new LocalServerClient().createAssignment({ ...input, id });
     } catch (_) {
       // The local assignment remains available until the Pi is connected.
     }
@@ -42,7 +42,7 @@ export function TeacherScreen({ classes, onSaved }: { classes: SchoolClass[]; on
   const review = async (item: TeacherReview, status: 'graded' | 'returned' | 'revision_requested') => {
     await saveGrade(item.submission.assignmentId, item.grade ?? 100, item.feedback ?? '', status);
     try {
-      if (process.env.EXPO_PUBLIC_LMS_SERVER_URL) {
+      if (getConfiguredServerUrl()) {
         await new LocalServerClient().gradeSubmission(item.submission.id, { gradeValue: item.grade ?? 100, feedback: item.feedback ?? '', status });
       }
     } catch (_) {

@@ -13,7 +13,7 @@ import { ClassesScreen } from './src/screens/ClassesScreen';
 import { ClassDetailScreen } from './src/screens/ClassDetailScreen';
 import { MaterialViewerScreen } from './src/screens/MaterialViewerScreen';
 import { QuizScreen } from './src/screens/QuizScreen';
-import { getConfiguredServerCredentials, getConfiguredServerUrl, fetchServerSnapshot, LocalServerClient } from './src/services/serverApi';
+import { getConfiguredServerCredentials, getConfiguredServerUrl, fetchServerSnapshot, LocalServerClient, resolveServerUrl } from './src/services/serverApi';
 import { CalendarScreen } from './src/screens/CalendarScreen';
 import { AdministratorScreen } from './src/screens/AdministratorScreen';
 import { TeacherScreen } from './src/screens/TeacherScreen';
@@ -36,7 +36,7 @@ export default function App() {
   useEffect(() => {
     let active = true;
     initializeDatabase().then(async () => {
-      const serverUrl = getConfiguredServerUrl();
+      const serverUrl = await resolveServerUrl();
       if (serverUrl) {
         try {
           const credentials = getConfiguredServerCredentials();
