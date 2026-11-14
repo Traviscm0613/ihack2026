@@ -14,9 +14,9 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
   const [date, setDate] = useState('2026-11-21');
   const [message, setMessage] = useState('');
   const [className, setClassName] = useState('');
+  const [classSection, setClassSection] = useState('');
   const [classTeacher, setClassTeacher] = useState('');
   const [classLocation, setClassLocation] = useState('');
-  const [classGrade, setClassGrade] = useState('');
   const [classDescription, setClassDescription] = useState('');
   const [quizTitle, setQuizTitle] = useState('');
   const [quizDescription, setQuizDescription] = useState('');
@@ -29,7 +29,7 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
   const addAssignment = async () => {
     if (!assignmentTitle.trim()) return setMessage('Enter an assignment title first.');
     const selectedClass = classes.find((item) => item.id === classId) ?? classes[0];
-    await createAssignment({ title: assignmentTitle.trim(), subject: selectedClass?.name ?? 'Test subject', teacher: selectedClass?.teacher ?? 'Developer tool', dueDate, progress: 0, status: 'In progress', tone: 'math', classId: selectedClass?.id ?? '', description, submissionTypes, grade: null, feedback: null });
+    await createAssignment({ title: assignmentTitle.trim(), subject: selectedClass?.name ?? 'Test subject', teacher: selectedClass?.teacher ?? 'Developer tool', dueDate, completed: false, tone: 'math', classId: selectedClass?.id ?? '', description, submissionTypes, grade: null, feedback: null });
     setAssignmentTitle('');
     setDescription('');
     setMessage('Assignment added to SQLite.');
@@ -38,7 +38,7 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
 
   const addEvent = async () => {
     if (!eventTitle.trim()) return setMessage('Enter an event title first.');
-    await createEvent({ title: eventTitle.trim(), date, kind: 'school' });
+    await createEvent({ title: eventTitle.trim(), date, kind: 'school', localOnly: true });
     setEventTitle('');
     setMessage('Event added to SQLite.');
     await onSaved();
@@ -46,11 +46,11 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
 
   const addClass = async () => {
     if (!className.trim()) return setMessage('Enter a class name first.');
-    const id = await createClass({ name: className.trim(), teacher: classTeacher.trim() || 'Teacher', location: classLocation.trim() || 'Room TBD', grade: classGrade.trim() || '—', color: classColor, description: classDescription.trim() || `${className.trim()} course materials and class information.` });
+    const id = await createClass({ name: className.trim(), sectionName: classSection.trim() || null, teacher: classTeacher.trim() || 'Teacher', location: classLocation.trim() || 'Room TBD', grade: '—', color: classColor, description: classDescription.trim() || `${className.trim()} course materials and class information.` });
     setClassName('');
+    setClassSection('');
     setClassTeacher('');
     setClassLocation('');
-    setClassGrade('');
     setClassDescription('');
     setClassId(id);
     setMessage('Class added to SQLite.');
@@ -74,7 +74,7 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
     <Text style={styles.eyebrow}>DEVELOPER TOOLS</Text>
     <Text style={styles.title}>Local database test data</Text>
     <Text style={styles.body}>Use this screen while the Raspberry Pi API is being built. Records are written directly to the device SQLite database.</Text>
-    <View style={styles.card}><Text style={styles.cardTitle}>Add class</Text><TextInput value={className} onChangeText={setClassName} placeholder="Class name" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classTeacher} onChangeText={setClassTeacher} placeholder="Teacher" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classLocation} onChangeText={setClassLocation} placeholder="Room or location" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classGrade} onChangeText={setClassGrade} placeholder="Current grade" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classDescription} onChangeText={setClassDescription} placeholder="Class description" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.multiline]} /><Text style={styles.label}>Color</Text><View style={styles.chips}>{(['purple', 'blue', 'green', 'orange'] as const).map((color) => <Pressable key={color} onPress={() => setClassColor(color)} style={[styles.chip, classColor === color && styles.selectedChip]}><Text style={[styles.chipText, classColor === color && styles.selectedChipText]}>{color}</Text></Pressable>)}</View><Pressable style={styles.button} onPress={addClass}><Text style={styles.buttonText}>Save class</Text></Pressable></View>
+    <View style={styles.card}><Text style={styles.cardTitle}>Add class</Text><TextInput value={className} onChangeText={setClassName} placeholder="Class name" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classSection} onChangeText={setClassSection} placeholder="Section name (optional)" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classTeacher} onChangeText={setClassTeacher} placeholder="Teacher" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classLocation} onChangeText={setClassLocation} placeholder="Room or location" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={classDescription} onChangeText={setClassDescription} placeholder="Class description" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.multiline]} /><Text style={styles.label}>Color</Text><View style={styles.chips}>{(['purple', 'blue', 'green', 'orange'] as const).map((color) => <Pressable key={color} onPress={() => setClassColor(color)} style={[styles.chip, classColor === color && styles.selectedChip]}><Text style={[styles.chipText, classColor === color && styles.selectedChipText]}>{color}</Text></Pressable>)}</View><Pressable style={styles.button} onPress={addClass}><Text style={styles.buttonText}>Save class</Text></Pressable></View>
     <View style={styles.card}><Text style={styles.cardTitle}>Add assignment</Text><TextInput value={assignmentTitle} onChangeText={setAssignmentTitle} placeholder="Assignment title" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={description} onChangeText={setDescription} placeholder="Description or instructions" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.multiline]} /><Text style={styles.label}>Class</Text><View style={styles.chips}>{classes.map((item) => <Pressable key={item.id} onPress={() => setClassId(item.id)} style={[styles.chip, classId === item.id && styles.selectedChip]}><Text style={[styles.chipText, classId === item.id && styles.selectedChipText]}>{item.name}</Text></Pressable>)}</View><Text style={styles.label}>Due date</Text><TextInput value={dueDate} onChangeText={setDueDate} placeholder="YYYY-MM-DD" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.label}>Allowed submissions</Text><View style={styles.chips}>{(['file', 'photo', 'scan'] as SubmissionType[]).map((item) => <Pressable key={item} onPress={() => setSubmissionTypes((current) => current.includes(item) ? current.filter((value) => value !== item) : [...current, item])} style={[styles.chip, submissionTypes.includes(item) && styles.selectedChip]}><Text style={[styles.chipText, submissionTypes.includes(item) && styles.selectedChipText]}>{item === 'file' ? 'File upload' : item === 'photo' ? 'Picture' : 'Document scan'}</Text></Pressable>)}</View><Pressable style={styles.button} onPress={addAssignment}><Text style={styles.buttonText}>Save assignment</Text></Pressable></View>
     <View style={styles.card}><Text style={styles.cardTitle}>Add quiz</Text><TextInput value={quizTitle} onChangeText={setQuizTitle} placeholder="Quiz title" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={quizDescription} onChangeText={setQuizDescription} placeholder="Quiz description" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.label}>Class</Text><View style={styles.chips}>{classes.map((item) => <Pressable key={item.id} onPress={() => setClassId(item.id)} style={[styles.chip, classId === item.id && styles.selectedChip]}><Text style={[styles.chipText, classId === item.id && styles.selectedChipText]}>{item.name}</Text></Pressable>)}</View><TextInput value={quizQuestion} onChangeText={setQuizQuestion} placeholder="Question prompt" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.multiline]} /><Text style={styles.label}>Question type</Text><View style={styles.chips}>{(['multiple_choice', 'short_answer'] as const).map((type) => <Pressable key={type} onPress={() => setQuizType(type)} style={[styles.chip, quizType === type && styles.selectedChip]}><Text style={[styles.chipText, quizType === type && styles.selectedChipText]}>{type === 'multiple_choice' ? 'Multiple choice' : 'Short answer'}</Text></Pressable>)}</View>{quizType === 'multiple_choice' ? <><TextInput value={quizOptions} onChangeText={setQuizOptions} placeholder="Options, separated by commas" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={quizAnswer} onChangeText={setQuizAnswer} placeholder="Correct answer" placeholderTextColor="#a0a9bb" style={styles.input} /></> : <Text style={styles.note}>Short-answer questions are saved as ungraded for teacher review.</Text>}<Pressable style={styles.button} onPress={addQuiz}><Text style={styles.buttonText}>Save quiz</Text></Pressable></View>
     <View style={styles.card}><Text style={styles.cardTitle}>Add calendar event</Text><TextInput value={eventTitle} onChangeText={setEventTitle} placeholder="Event title" placeholderTextColor="#a0a9bb" style={styles.input} /><TextInput value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" placeholderTextColor="#a0a9bb" style={styles.input} /><Pressable style={styles.button} onPress={addEvent}><Text style={styles.buttonText}>Save event</Text></Pressable></View>

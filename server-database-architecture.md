@@ -64,6 +64,7 @@ Stores classes managed by teachers.
 |---|---|---|
 | `id` | `CHAR(36)` | UUID primary key |
 | `name` | `VARCHAR(160)` | Class name |
+| `section_name` | `VARCHAR(160)` | Optional section name; null means it is not displayed |
 | `description` | `TEXT` | Class overview |
 | `teacher_id` | `CHAR(36)` | Foreign key to `users` |
 | `room` | `VARCHAR(80)` | Optional physical location |
@@ -223,9 +224,15 @@ Stores a student’s quiz response and grading state.
 | `created_at` | `DATETIME(6)` | Server timestamp |
 | `updated_at` | `DATETIME(6)` | Server timestamp |
 
+Quiz attempts are append-only. The API must reject edits and deletes after submission, and enforce one attempt per student per quiz with a unique key on (`quiz_id`, `student_id`). The client may encrypt its local cached answer payload, but the Raspberry Pi remains the authoritative source for teacher feedback and final grades.
+
+Assignment grades belong to individual submissions or assignment records. The server should not calculate or persist an overall grade for a class in this project scope.
+
 ### `calendar_events`
 
 Stores assignment deadlines, class events, school events, holidays, and reminders.
+
+Student-created personal events are intentionally not stored in this server table for the current scope; they remain local-only on the client.
 
 | Column | Type | Notes |
 |---|---|---|

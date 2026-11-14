@@ -12,7 +12,7 @@ export function ClassDetailScreen({ classRow, assignments, materials, quizzes, o
   const past = assignments.filter((assignment) => assignment.dueDate < today);
   return <View>
     <Pressable style={styles.back} onPress={onBack}><AppIcon icon={faArrowLeft} size={12} color={theme.colors.violet} /><Text style={styles.backText}>Back to classes</Text></Pressable>
-    <View style={styles.hero}><Text style={styles.eyebrow}>CLASS DETAILS</Text><Text style={styles.title}>{classRow.name}</Text><Text style={styles.teacher}>{classRow.teacher} · {classRow.location}</Text><Text style={styles.description}>{classRow.description || 'Class description will appear here.'}</Text></View>
+    <View style={styles.hero}><Text style={styles.eyebrow}>CLASS DETAILS</Text><Text style={styles.title}>{classRow.name}</Text><Text style={styles.teacher}>{classRow.sectionName ? `${classRow.sectionName} · ` : ''}{classRow.teacher} · {classRow.location}</Text><Text style={styles.description}>{classRow.description || 'Class description will appear here.'}</Text></View>
     <Text style={styles.sectionTitle}>Class materials</Text>
     <View style={styles.materials}>{materials.length ? materials.map((material) => <Pressable style={styles.material} key={material.id} onPress={() => onSelectMaterial(material)}><AppIcon icon={material.type === 'textbook' ? faBook : faFileLines} size={15} color={theme.colors.violet} /><View><Text style={styles.materialTitle}>{material.title}</Text><Text style={styles.materialType}>{material.type}</Text></View></Pressable>) : <Text style={styles.empty}>Syllabus, textbooks, and other class resources will appear here.</Text>}</View>
     <Text style={styles.sectionTitle}>Quizzes</Text>

@@ -84,21 +84,21 @@ The client application should:
 
 The client uses Expo SQLite for its local database. The initial schema includes:
 
-- `assignments` for downloaded assignment details, class membership, descriptions, due dates, allowed submission types, and local progress
+- `assignments` for downloaded assignment details, class membership, descriptions, due dates, allowed submission types, and local completion state
 - `classes` for the student's enrolled classes
 - `events` for assignment due dates, class events, and school events
 - `submissions` for locally saved file, picture, and scan submissions and their assignment status
 - `quizzes`, `quiz_questions`, and `quiz_attempts` for simple class quizzes and local attempts
-- `outbox` for pending progress updates and submissions that must be retried
+- `outbox` for pending completion updates and submissions that must be retried
 - `sync_metadata` for the last successful synchronization and server information
 
 Database changes should be introduced through versioned migrations. The client database is a cache and work area, not a replacement for server authorization. The local outbox must use stable IDs so retries do not create duplicate records.
 
 The first assignment workflow supports file uploads, pictures, and document scans. Text-editor submissions, quizzes, and other media types remain future additions.
 
-The assignments view groups completion by class. Each class displays a completion ring calculated as completed assignments divided by total assignments for that class. Assignment UI should show only whether work is completed; a work-progress percentage is not part of the student workflow. Developer tools can create local test classes with a name, teacher, location, grade, and color.
+The assignments view groups completion by class. Each class displays a completion ring calculated as completed assignments divided by total assignments for that class. Assignment UI should show only whether work is completed; a work-progress percentage is not part of the student workflow. Developer tools can create local test classes with a name, teacher, location, grade, and color. Quizzes are included in the assignments view as due work items and retain their own quiz flow and due dates. The default assignments filter hides completed assignments and quizzes; the Completed filter shows both, using immutable local quiz-attempt records to determine quiz completion.
 
-The assignments page also displays an overall completion ring calculated across all assignments. The classes page provides a roster view with class details, current grade, assignment totals, and the same per-class completion calculation.
+The assignments page also displays an overall completion ring calculated across all assignments. The classes page provides a roster view with class details, assignment totals, and the same per-class completion calculation; class-level overall grades are out of scope.
 
 Each class has a dedicated detail view with a description, class materials, current assignments, and past assignments. Past assignment records may include a grade and written teacher feedback. Selecting an assignment from either the assignments page or a class detail view opens the submission flow.
 
@@ -166,6 +166,7 @@ The calendar is one of the primary features of the application. It should show:
 - teacher-created reminders
 
 Calendar events should be visible based on the user's role and class membership. Students should be able to select an event and view related assignment details.
+Students may create personal calendar events in the client. These events are marked local-only, are editable only by the student who created them, and are never added to the server synchronization payload or outbox.
 
   
 
@@ -287,6 +288,17 @@ The minimum viable product should include:
 - local database and uploaded-file backups
 
 Native support for additional platforms, advanced quizzes, and large media uploads should be evaluated after the local workflow is reliable. Internet connectivity and cloud synchronization are not requirements for the MVP.
+
+### Current quiz and grading decisions
+
+- A quiz may be opened and submitted only once per student. A previously submitted quiz is read as locked and displays that it is awaiting teacher feedback.
+- Quiz answers are stored locally as an encrypted payload with a nonce and integrity hash. SQLite triggers prevent quiz-attempt rows from being edited or deleted after insertion.
+- Multiple-choice answers may be scored locally, but the attempt remains awaiting teacher feedback until the server returns the authoritative result. Short-answer responses are always ungraded until a teacher reviews them.
+- Grades and written feedback belong to individual assignments. The client does not calculate or display an overall grade for a class.
+
+### Assignment date filters and class sections
+
+The assignments page supports This week, This week + next week, and All dates filters. Completion rings are calculated from assignments in the selected date range. Classes have an optional section name; null or empty section names are not displayed.
 
 ## Open questions
 - Will the Raspberry Pi provide the school's Wi-Fi directly, or will it connect to an existing local router?

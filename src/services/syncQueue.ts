@@ -4,9 +4,9 @@ export type SyncState = 'synced' | 'pending' | 'offline';
 
 export type PendingChange = {
   id: string;
-  type: 'assignment-progress' | 'submission';
+  type: 'assignment-completion' | 'submission';
   createdAt: string;
-  payload: Record<string, string | number>;
+  payload: Record<string, string | number | boolean>;
 };
 
 // Replace this adapter with AsyncStorage/SQLite when persistence is added.

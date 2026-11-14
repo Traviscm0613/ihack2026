@@ -49,7 +49,7 @@ export function CalendarScreen({ events, onSaved, onOpenAssignment }: { events: 
     if (!parsedDate || !time || !title.trim() || !notes.trim()) return;
     setSaving(true);
     try {
-      const input = { title: title.trim(), date: keyFor(parsedDate), time: displayTime(time), notes: notes.trim(), kind: 'school' as const };
+      const input = { title: title.trim(), date: keyFor(parsedDate), time: displayTime(time), notes: notes.trim(), kind: 'school' as const, localOnly: true };
       if (editingEventId) await updateEvent(editingEventId, input);
       else await createEvent({ id: undefined, ...input });
       const date = parsedDate;
