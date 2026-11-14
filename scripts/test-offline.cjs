@@ -149,6 +149,7 @@ test('a cached snapshot preserves queued completion, document metadata, and immu
   const nacl = require('tweetnacl');
   const protection = load('src/services/dataProtection.ts', {tweetnacl: {default: nacl}, 'expo-crypto': {getRandomValues: bytes => require('node:crypto').randomFillSync(bytes)}});
   const db = load('src/db/database.ts', {
+    'react-native': {Platform: {OS: 'web'}},
     'expo-sqlite': {openDatabaseAsync: async () => adapter}, tweetnacl: {default: nacl},
     '../data/mockData': {}, '../services/dataProtection': protection, '../services/serverApi': {},
   });

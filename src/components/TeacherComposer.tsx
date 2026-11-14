@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {View, Platform, Switch} from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -16,13 +16,44 @@ const empty = () => ({mode: 'assignment' as 'assignment' | 'quiz' | 'material', 
 
 export function TeacherComposer({schoolClass, students, onSaved, onMessage}: {schoolClass: SchoolClass; students: {id: string; displayName: string}[]; onSaved: () => Promise<void>; onMessage: (text: string) => void}) {
   const [draft, setDraft] = useState(empty);
+  const draftEdited = useRef(false);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
   const key = `composer:${schoolClass.id}`;
-  useEffect(() => {let active = true; cachedValue<ReturnType<typeof empty>>(key).then(saved => {if(active){if(saved) setDraft({...empty(), ...saved}); setReady(true);}}); return () => {active = false;};}, [key]);
-  useEffect(() => {if(ready) void cacheValue(key, draft);}, [draft, ready, key]);
-  const patch = (value: Partial<typeof draft>) => setDraft(current => ({...current, ...value}));
-  const editQuestion = (index: number, update: Partial<Question>) => patch({questions: draft.questions.map((q, i) => i === index ? {...q, ...update} : q)});
+  useEffect(() => {
+    let active = true;
+    draftEdited.current = false;
+    cachedValue<ReturnType<typeof empty>>(key).then(saved => {
+      if (active) {
+        // Do not let a slow cache read overwrite text entered while the form
+        // was loading.
+        if (saved && !draftEdited.current) setDraft({...empty(), ...saved});
+        setReady(true);
+      }
+    }).catch(() => {if (active) setReady(true);});
+    return () => {active = false;};
+  }, [key]);
+  useEffect(() => {
+    if (!ready) return;
+    // Encrypting attachments and writing SQLite on every keystroke blocks
+    // typing on web. Save only after the teacher pauses.
+    const timer = setTimeout(() => {
+      void cacheValue(key, draft).catch(() => {});
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [draft, ready, key]);
+  const patch = (value: Partial<typeof draft>) => {
+    draftEdited.current = true;
+    setDraft(current => ({...current, ...value}));
+  };
+  const editQuestion = (index: number, update: Partial<Question>) => {
+    draftEdited.current = true;
+    setDraft(current => ({
+      ...current,
+      questions: current.questions.map((q, i) => i === index ? {...q, ...update} : q),
+    }));
+  };
   const pick = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({multiple: true, copyToCacheDirectory: true});
@@ -44,6 +75,8 @@ export function TeacherComposer({schoolClass, students, onSaved, onMessage}: {sc
     } catch(e){onMessage(String(e));}
   };
   const save = async () => {
+    if (saving.current) return;
+    saving.current = true;
     setBusy(true);
     try {
       if(!draft.title.trim()) throw Error('Enter a title.');
@@ -59,11 +92,11 @@ export function TeacherComposer({schoolClass, students, onSaved, onMessage}: {sc
       if(draft.mode === 'assignment') await createAssignment({id: entityId, classId: schoolClass.id, title: body.title, subject: schoolClass.name, teacher: schoolClass.teacher, description: body.description, dueDate: draft.date, due: draft.date, dueAt, recipientIds: body.recipientIds, allowLate: draft.allowLate, allowResubmission: draft.allowResubmission, completed: false, tone: 'math', submissionTypes: draft.types, grade: null, feedback: null});
       if(draft.mode === 'quiz') await createQuiz({id: entityId, classId: schoolClass.id, title: body.title, description: body.description, dueDate: draft.date, dueAt, questions: questions.map(q => ({...q, type: q.type as 'multiple_choice' | 'short_answer'}))});
       if(draft.mode === 'material') await saveMaterialLocally({id: entityId, classId: schoolClass.id, title: body.title, type: 'resource', uri: null, content: draft.description});
-      const cleared = empty(); cleared.mode = draft.mode; setDraft(cleared); await cacheValue(key, cleared);
+      const cleared = empty(); cleared.mode = draft.mode; draftEdited.current = false; setDraft(cleared); await cacheValue(key, cleared);
       onMessage('Saved on this device. Publishing will finish automatically when the Pi is reachable.');
       void onSaved();
     } catch(e) {onMessage(e instanceof Error ? e.message : String(e));}
-    finally {setBusy(false);}
+    finally {saving.current = false; setBusy(false);}
   };
   return <Panel><Heading>Create for {schoolClass.name}</Heading><Caption>Drafts save automatically, including when you are offline.</Caption>
     <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8}}>{(['assignment', 'quiz', 'material'] as const).map(mode => <Pressable key={mode} accessibilityState={{selected: draft.mode === mode}} onPress={() => patch({mode})}><Text>{draft.mode === mode ? '✓ ' : ''}{mode[0].toUpperCase() + mode.slice(1)}</Text></Pressable>)}</View>
