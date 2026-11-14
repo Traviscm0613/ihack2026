@@ -7,6 +7,7 @@ import { theme } from './src/theme';
 import { assignments } from './src/data/mockData';
 import { getDashboardData, initializeDatabase, type DashboardData } from './src/db/database';
 import { DebugScreen } from './src/screens/DebugScreen';
+import { CalendarScreen } from './src/screens/CalendarScreen';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
@@ -41,6 +42,8 @@ export default function App() {
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
             <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} query={query} onQueryChange={setQuery} />
+          ) : activeTab === 'Calendar' ? (
+            <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} />
           ) : activeTab === 'Developer' ? (
             <DebugScreen onSaved={refreshDatabase} />
           ) : (

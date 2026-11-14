@@ -2,8 +2,8 @@ import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
 import { assignments as seedAssignments, classes as seedClasses, type Assignment } from '../data/mockData';
 
 export type SchoolClass = { id: string; name: string; teacher: string; location: string; grade: string; color: 'purple' | 'blue' | 'green' | 'orange' };
-export type CalendarEvent = { id: string; title: string; date: string; kind: 'assignment' | 'class' | 'school'; assignmentId?: string };
-export type DashboardData = { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null };
+export type CalendarEvent = { id: string; title: string; date: string; time?: string; notes?: string; kind: 'assignment' | 'class' | 'school'; assignmentId?: string };
+export type DashboardData = { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; events: CalendarEvent[] };
 
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
@@ -42,6 +42,8 @@ export async function initializeDatabase() {
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL,
       event_date TEXT NOT NULL,
+      event_time TEXT NOT NULL DEFAULT '09:00',
+      notes TEXT NOT NULL DEFAULT '',
       kind TEXT NOT NULL,
       assignment_id TEXT REFERENCES assignments(id)
     );
@@ -57,6 +59,10 @@ export async function initializeDatabase() {
     );
   `);
 
+  // Keep existing local databases compatible with the richer calendar event shape.
+  try { await db.execAsync("ALTER TABLE events ADD COLUMN event_time TEXT NOT NULL DEFAULT '09:00'"); } catch (_) { /* column already exists */ }
+  try { await db.execAsync("ALTER TABLE events ADD COLUMN notes TEXT NOT NULL DEFAULT ''"); } catch (_) { /* column already exists */ }
+
   await seedDatabase(db);
 }
 
@@ -70,7 +76,7 @@ async function seedDatabase(db: SQLiteDatabase) {
       const [teacher, location] = teacherAndLocation.split(' · ');
       await classStatement.executeAsync(`class-${index + 1}`, name, teacher, location, grade, color);
     }
-    await db.runAsync('INSERT OR IGNORE INTO events (id, title, event_date, kind, assignment_id) VALUES (?, ?, ?, ?, ?)', 'event-1', 'Quadratic equations practice due', '2026-11-13', 'assignment', 'algebra-1');
+    await db.runAsync('INSERT OR IGNORE INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', 'event-1', 'Quadratic equations practice due', '2026-11-13', '09:00', 'Submit before class.', 'assignment', 'algebra-1');
     await db.runAsync('INSERT OR IGNORE INTO sync_metadata (key, value) VALUES (?, ?)', 'last_sync', 'Just now');
   } finally {
     await assignmentStatement.finalizeAsync();
@@ -82,8 +88,8 @@ export async function getDashboardData(): Promise<DashboardData> {
   const db = await getDatabase();
   const assignmentRows = await db.getAllAsync<Assignment>('SELECT id, title, subject, teacher, due, progress, status, tone FROM assignments ORDER BY due');
   const classRows = await db.getAllAsync<SchoolClass>('SELECT id, name, teacher, location, grade, color FROM classes ORDER BY name');
-  const event = await db.getFirstAsync<CalendarEvent>('SELECT id, title, event_date AS date, kind, assignment_id AS assignmentId FROM events ORDER BY event_date LIMIT 1');
-  return { assignments: assignmentRows, classes: classRows, event: event ?? null };
+  const events = await db.getAllAsync<CalendarEvent>('SELECT id, title, event_date AS date, event_time AS time, notes, kind, assignment_id AS assignmentId FROM events ORDER BY event_date, event_time');
+  return { assignments: assignmentRows, classes: classRows, event: events[0] ?? null, events };
 }
 
 export async function createAssignment(input: Omit<Assignment, 'id'> & { id?: string }) {
@@ -94,8 +100,12 @@ export async function createAssignment(input: Omit<Assignment, 'id'> & { id?: st
 
 export async function createEvent(input: Omit<CalendarEvent, 'id'> & { id?: string }) {
   const id = input.id ?? `event-${Date.now()}`;
-  await (await getDatabase()).runAsync('INSERT INTO events (id, title, event_date, kind, assignment_id) VALUES (?, ?, ?, ?, ?)', id, input.title, input.date, input.kind, input.assignmentId ?? null);
+  await (await getDatabase()).runAsync('INSERT INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, input.title, input.date, input.time ?? '09:00', input.notes ?? input.title, input.kind, input.assignmentId ?? null);
   return id;
+}
+
+export async function updateEvent(id: string, input: Omit<CalendarEvent, 'id'>) {
+  await (await getDatabase()).runAsync('UPDATE events SET title = ?, event_date = ?, event_time = ?, notes = ?, kind = ?, assignment_id = ? WHERE id = ?', input.title, input.date, input.time ?? '09:00', input.notes ?? input.title, input.kind, input.assignmentId ?? null, id);
 }
 
 export async function updateAssignmentProgress(id: string, progress: number, status: Assignment['status']) {
