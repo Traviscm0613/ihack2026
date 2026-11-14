@@ -124,6 +124,18 @@ export async function initializeDatabase() {
   await ensureEventColumns(db);
 
   if (process.env.NODE_ENV !== 'production') await seedDatabase(db);
+  await syncAssignmentEvents(db);
+}
+
+async function syncAssignmentEvents(db: SQLiteDatabase) {
+  const assignments = await db.getAllAsync<{ id: string; title: string; dueDate: string; description: string }>("SELECT id, title, COALESCE(due_date, due) AS dueDate, COALESCE(description, '') AS description FROM assignments WHERE due_date IS NOT NULL OR due IS NOT NULL");
+  for (const assignment of assignments) {
+    const eventDate = assignment.dueDate.replace(/^Due\s+/i, '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) continue;
+    const existing = await db.getFirstAsync<{ id: string }>('SELECT id FROM events WHERE assignment_id = ? LIMIT 1', assignment.id);
+    if (existing) continue;
+    await db.runAsync('INSERT OR IGNORE INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', `assignment-event-${assignment.id}`, assignment.title, eventDate, null, assignment.description, 'assignment', assignment.id);
+  }
 }
 
 async function ensureSubmissionColumns(db: SQLiteDatabase) {
@@ -202,6 +214,7 @@ export async function applyServerSnapshot(snapshot: { assignments: Assignment[];
   await db.withTransactionAsync(async () => {
     for (const item of snapshot.classes) await db.runAsync('INSERT OR REPLACE INTO classes (id, name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?)', item.id, item.name, item.teacher, item.location, item.grade, item.color, item.description);
     for (const item of snapshot.assignments) await db.runAsync('INSERT OR REPLACE INTO assignments (id, title, subject, teacher, due, progress, status, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.subject, item.teacher, item.due, item.progress, item.status, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), item.grade, item.feedback);
+    await syncAssignmentEvents(db);
     for (const item of snapshot.events) await db.runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.date, item.time ?? null, item.notes ?? '', item.kind, item.assignmentId ?? null);
     await db.runAsync('INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)', 'last_sync', new Date().toISOString());
   });
@@ -217,6 +230,7 @@ export async function createAssignment(input: Omit<Assignment, 'id' | 'due'> & {
   const id = input.id ?? `assignment-${Date.now()}`;
   const due = input.due ?? `Due ${input.dueDate}`;
   await (await getDatabase()).runAsync('INSERT INTO assignments (id, title, subject, teacher, due, progress, status, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.title, input.subject, input.teacher, due, input.progress, input.status, input.tone, input.classId, input.description, input.dueDate, JSON.stringify(input.submissionTypes), input.grade, input.feedback);
+  await (await getDatabase()).runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', `assignment-event-${id}`, input.title, input.dueDate, null, input.description, 'assignment', id);
   return id;
 }
 
@@ -286,7 +300,14 @@ export async function getSubmissions(assignmentId: string) {
 }
 
 export async function deleteEvent(id: string) {
-  await (await getDatabase()).runAsync('DELETE FROM events WHERE id = ?', id);
+  const db = await getDatabase();
+  const event = await db.getFirstAsync<{ kind: CalendarEvent['kind']; assignmentId: string | null }>('SELECT kind, assignment_id AS assignmentId FROM events WHERE id = ?', id);
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM events WHERE id = ?', id);
+    if (event?.kind === 'assignment' && event.assignmentId) {
+      await db.runAsync('DELETE FROM assignments WHERE id = ?', event.assignmentId);
+    }
+  });
 }
 
 export async function updateAssignmentProgress(id: string, progress: number, status: Assignment['status']) {
