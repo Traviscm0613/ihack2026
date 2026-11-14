@@ -53,7 +53,7 @@ export type SyncOperation = {
 };
 
 export const DEFAULT_RASPBERRY_PI_URL = 'http://photobooth';
-export const DEFAULT_RASPBERRY_PI_URLS = ['http://photobooth', 'http://photobooth.local', 'http://192.168.4.1:8000'];
+export const DEFAULT_RASPBERRY_PI_URLS = ['http://photobooth:8090', 'http://photobooth.local:8090', 'http://192.168.4.1:8090'];
 
 let activeServerToken: string | null = null;
 

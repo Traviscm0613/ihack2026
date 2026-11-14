@@ -6,7 +6,8 @@ import os
 @dataclass(frozen=True)
 class Settings:
     host: str = os.getenv("LOCALLEARN_HOST", "0.0.0.0")
-    port: int = int(os.getenv("LOCALLEARN_PORT", "8080"))
+    # Port 8080 is already used by the Pi's gameboard service.
+    port: int = int(os.getenv("LOCALLEARN_PORT", "8090"))
     data_dir: Path = Path(os.getenv("LOCALLEARN_DATA_DIR", "./server_data"))
     max_upload_bytes: int = int(os.getenv("LOCALLEARN_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 
