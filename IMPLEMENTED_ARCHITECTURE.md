@@ -63,13 +63,17 @@ The API client adds the bearer token, JSON headers, consistent error handling, a
 
 `migrations/001_initial_schema.sql` defines the authoritative server model in SQLite: users and roles, classes/memberships, assignments/resources, submissions/files/feedback, curriculum units/lessons, quizzes/attempts, learning reviews, calendar events, class materials, learner portfolio/transfer codes, sync operation idempotency, and schema migration tracking. The Pi database is the source of truth; each client has a separate Expo SQLite cache and never opens the Pi database file. `server-database-architecture.md` documents the SQLite setup, storage layout, backup expectations, security boundary, and API responsibilities.
 
+<<<<<<< HEAD
 The Raspberry Pi implementation still needs to provide the endpoint handlers, authentication/session issuance, authorization checks, file storage, upload streaming, backup execution, and health metrics. Start with a real SQLite-backed login, snapshot, and student submission/quiz path for the test demo, then complete teacher grading and administration. The client is prepared for those endpoints and does not access server SQL directly.
+=======
+`server_src/` provides the Raspberry Pi implementation: endpoint handlers, authentication/session issuance, role checks, SQLite persistence, multipart file storage, submission file attachment/download, backups, restore, sync idempotency, CORS, and health metrics. The client is prepared for those endpoints and does not access server SQL directly.
+>>>>>>> bdb58b778f911779bb72d693142aa250a9eacb5e
 
 ## Verification and deployment checklist
 
-1. Set `EXPO_PUBLIC_LMS_SERVER_URL` to the Pi LAN address.
-2. Replace the temporary role switcher with the authenticated session from `LocalServerClient.login`.
-3. Implement the endpoint shapes listed above against the server migration schema.
+1. Set `EXPO_PUBLIC_LMS_SERVER_URL` to `http://photobooth` (or the Pi LAN address).
+2. Set `EXPO_PUBLIC_LMS_USERNAME` and `EXPO_PUBLIC_LMS_PASSWORD` for the account the app should use; the app logs in at startup and shares that token with all API clients.
+3. Run `python3 -m server_src.bootstrap_admin ...` on the Pi before first launch.
 4. Make sync processing idempotent using the outbox record id / `sync_operations` table.
 5. Return a snapshot compatible with `ServerSnapshot` and include authoritative grade/status updates.
 6. Test offline submission, reconnect/retry, logout/session expiry, shared-device separation, backup/restore, and full-storage behavior on target Android devices.
