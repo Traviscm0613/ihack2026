@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { CalendarEvent } from '../db/database';
 import { createEvent, deleteEvent, updateEvent } from '../db/database';
 import { theme } from '../theme';
@@ -74,12 +74,18 @@ export function CalendarScreen({ events, onSaved }: { events: CalendarEvent[]; o
     setNotes(event.notes ?? '');
     setEditingEventId(event.id);
   };
-  const removeEvent = () => {
+  const removeEvent = async () => {
     if (!editingEventId) return;
-    Alert.alert('Delete event?', 'This event will be removed from your calendar.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { await deleteEvent(editingEventId); setEditingEventId(null); setTitle(''); setNotes(''); setTime('9:00'); setEventDate(inputDateFor(selectedDate)); await onSaved(); } },
-    ]);
+    setSaving(true);
+    try {
+      await deleteEvent(editingEventId);
+      setEditingEventId(null);
+      setTitle('');
+      setNotes('');
+      setTime('9:00');
+      setEventDate(inputDateFor(selectedDate));
+      await onSaved();
+    } finally { setSaving(false); }
   };
 
   return <View>
@@ -91,7 +97,7 @@ export function CalendarScreen({ events, onSaved }: { events: CalendarEvent[]; o
       <View style={styles.weekdays}>{weekdays.map((day) => <Text key={day} style={styles.weekday}>{day}</Text>)}</View><View style={styles.days}>{days.map((date) => { const inMonth = date.getMonth() === viewDate.getMonth(); const selected = keyFor(date) === keyFor(selectedDate); const hasEvent = events.some((event) => event.date === keyFor(date)); return <Pressable key={keyFor(date)} onPress={() => chooseDate(date)} style={[styles.day, !inMonth && styles.dayMuted, selected && styles.daySelected]}><Text style={[styles.dayText, !inMonth && styles.dayTextMuted, selected && styles.dayTextSelected]}>{date.getDate()}</Text>{hasEvent ? <View style={[styles.dayDot, selected && styles.dayDotSelected]} /> : null}</Pressable>; })}</View>
       <View style={styles.selectedDate}><Text style={styles.selectedDateTitle}>{labelFor(selectedDate)}</Text>{selectedEvents.length ? selectedEvents.map((event) => <Pressable key={event.id} onPress={() => editEvent(event)} style={styles.eventRow}><View style={styles.eventDot} /><View><Text style={styles.eventTime}>{displayTime(event.time)} · {event.title}</Text><Text style={styles.eventNotes}>{event.notes || 'Saved locally'}</Text><Text style={styles.editHint}>Tap to edit</Text></View></Pressable>) : <Text style={styles.empty}>No events planned for this day yet.</Text>}</View>
     </View>
-    <View style={styles.card}><Text style={styles.kicker}>{editingEventId ? 'EDIT EVENT' : 'PLAN AHEAD'}</Text><Text style={styles.formTitle}>{editingEventId ? 'Edit event' : 'Add an event'}</Text><Text style={styles.fieldLabel}>TITLE</Text><TextInput value={title} onChangeText={setTitle} placeholder="Event title" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.fieldLabel}>DATE</Text><TextInput value={eventDate} onChangeText={setEventDate} placeholder="13 November 2026" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.fieldLabel}>TIME</Text><TextInput value={time} onChangeText={setTime} placeholder="9:00" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.fieldLabel}>NOTES</Text><TextInput value={notes} onChangeText={setNotes} placeholder="What do you need to remember?" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.notesInput]} /><Pressable disabled={saving} onPress={saveEvent} style={[styles.saveButton, saving && styles.saveDisabled]}><Text style={styles.saveText}>{saving ? 'Saving…' : editingEventId ? 'Update event  →' : 'Save event  →'}</Text></Pressable>{editingEventId ? <><Pressable onPress={() => { setEditingEventId(null); setTitle(''); setNotes(''); setTime('9:00'); setEventDate(inputDateFor(selectedDate)); }}><Text style={styles.cancelText}>Cancel editing</Text></Pressable><Pressable onPress={removeEvent} style={styles.deleteButton}><Text style={styles.deleteText}>Delete event</Text></Pressable></> : null}</View>
+    <View style={styles.card}><Text style={styles.kicker}>{editingEventId ? 'EDIT EVENT' : 'PLAN AHEAD'}</Text><Text style={styles.formTitle}>{editingEventId ? 'Edit event' : 'Add an event'}</Text><Text style={styles.fieldLabel}>TITLE</Text><TextInput value={title} onChangeText={setTitle} placeholder="Event title" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.fieldLabel}>DATE</Text><TextInput value={eventDate} onChangeText={setEventDate} placeholder="13 November 2026" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.fieldLabel}>TIME</Text><TextInput value={time} onChangeText={setTime} placeholder="9:00" placeholderTextColor="#a0a9bb" style={styles.input} /><Text style={styles.fieldLabel}>NOTES</Text><TextInput value={notes} onChangeText={setNotes} placeholder="What do you need to remember?" placeholderTextColor="#a0a9bb" multiline style={[styles.input, styles.notesInput]} /><Pressable disabled={saving} onPress={saveEvent} style={[styles.saveButton, saving && styles.saveDisabled]}><Text style={styles.saveText}>{saving ? 'Saving…' : editingEventId ? 'Update event  →' : 'Save event  →'}</Text></Pressable>{editingEventId ? <><Pressable disabled={saving} onPress={() => { setEditingEventId(null); setTitle(''); setNotes(''); setTime('9:00'); setEventDate(inputDateFor(selectedDate)); }}><Text style={styles.cancelText}>Cancel editing</Text></Pressable><Pressable disabled={saving} onPress={removeEvent} style={[styles.deleteButton, saving && styles.saveDisabled]}><Text style={styles.deleteText}>{saving ? 'Deleting…' : 'Delete event'}</Text></Pressable></> : null}</View>
   </View>;
 }
 
