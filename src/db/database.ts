@@ -1,4 +1,5 @@
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
+import { Platform } from 'react-native';
 import { assignments as seedAssignments, classes as seedClasses, type Assignment, type SubmissionType } from '../data/mockData';
 import { isProtectedJson, protectJson, unprotectJson } from '../services/dataProtection';
 import {LocalServerClient} from '../services/serverApi';
@@ -55,7 +56,7 @@ export async function initializeDatabase() {
 async function initializeDatabaseImpl() {
   const db = await getDatabase();
   await db.execAsync(`
-    PRAGMA journal_mode = WAL;
+    PRAGMA journal_mode = ${Platform.OS === 'web' ? 'DELETE' : 'WAL'};
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS assignments (
       id TEXT PRIMARY KEY NOT NULL,
