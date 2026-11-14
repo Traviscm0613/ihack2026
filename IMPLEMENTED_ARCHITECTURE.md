@@ -34,6 +34,14 @@ The current seed accounts (`demo-student`, `demo-teacher`, and `demo-admin`) exi
 
 `src/services/serverApi.ts` contains the single typed integration boundary, `LocalServerClient`. Set `EXPO_PUBLIC_LMS_SERVER_URL` to the Raspberry Pi base URL; no other client code should construct Pi URLs directly.
 
+## Local confidentiality and tamper resistance
+
+Sensitive local submission content, grading changes, and every outbox payload are stored as authenticated `tweetnacl.secretbox` envelopes with a nonce, ciphertext, and integrity digest. The sync queue decrypts and validates each record before sending it, retains failed records with an attempt count/error, and removes records only after the server acknowledges their stable operation ids. Quiz answers use the same authenticated-encryption approach and remain immutable after insertion.
+
+The protection key is configured from the authenticated server session token after `LocalServerClient.login`. The temporary offline/demo role switch uses a development fallback key and is not a security boundary. Production must replace that switcher with login/session restoration backed by platform secure storage (for example, Expo SecureStore) before deploying shared devices.
+
+Encryption cannot make a client device trustworthy against a student who controls the operating system, can reverse engineer the app, or can edit the local database. The Raspberry Pi remains authoritative: it must authenticate every request, authorize every role/entity, validate grades and roster changes, reject malformed or replayed operation ids, and return authoritative status in snapshots. Local encryption protects data at rest and detects ordinary local tampering; it does not replace server authorization.
+
 Implemented client methods and expected endpoint shapes:
 
 | Capability | Endpoint |

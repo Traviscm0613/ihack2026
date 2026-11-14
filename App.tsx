@@ -5,7 +5,7 @@ import { Dashboard } from './src/screens/Dashboard';
 import { NavigationBar } from './src/components/NavigationBar';
 import { activeTheme, setTheme, theme, themes, type ThemeName } from './src/theme';
 import { assignments } from './src/data/mockData';
-import { applyServerSnapshot, getClassDetail, getDashboardData, initializeDatabase, type DashboardData } from './src/db/database';
+import { applyServerSnapshot, getClassDetail, getDashboardData, getPendingChangeCount, initializeDatabase, type DashboardData } from './src/db/database';
 import { DebugScreen } from './src/screens/DebugScreen';
 import { AssignmentsScreen } from './src/screens/AssignmentsScreen';
 import { SubmissionScreen } from './src/screens/SubmissionScreen';
@@ -17,7 +17,8 @@ import { getConfiguredServerUrl, fetchServerSnapshot } from './src/services/serv
 import { CalendarScreen } from './src/screens/CalendarScreen';
 import { AdministratorScreen } from './src/screens/AdministratorScreen';
 import { TeacherScreen } from './src/screens/TeacherScreen';
-import type { UserRole } from './src/services/serverApi';
+import { LocalServerClient, type UserRole } from './src/services/serverApi';
+import { syncQueue } from './src/services/syncQueue';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
@@ -31,6 +32,7 @@ export default function App() {
   const [classDetail, setClassDetail] = useState<Awaited<ReturnType<typeof getClassDetail>> | null>(null);
   const [query, setQuery] = useState('');
   const [databaseState, setDatabaseState] = useState<{ loading: boolean; error: string | null; data: DashboardData | null }>({ loading: true, error: null, data: null });
+  const [pendingChanges, setPendingChanges] = useState(0);
   useEffect(() => {
     let active = true;
     initializeDatabase().then(async () => {
@@ -38,13 +40,17 @@ export default function App() {
       if (serverUrl) {
         try {
           await applyServerSnapshot(await fetchServerSnapshot(serverUrl));
+          await syncQueue.flush(new LocalServerClient(serverUrl));
         } catch (error) {
           console.warn('Raspberry Pi sync unavailable; using the local cache.', error);
         }
       }
-      return getDashboardData();
-    }).then((data) => {
-      if (active) setDatabaseState({ loading: false, error: null, data });
+      return Promise.all([getDashboardData(), getPendingChangeCount()]);
+    }).then(([data, pending]) => {
+      if (active) {
+        setDatabaseState({ loading: false, error: null, data });
+        setPendingChanges(pending);
+      }
     }).catch((error) => {
       if (active) setDatabaseState({ loading: false, error: error instanceof Error ? error.message : 'Unable to open the local database.', data: null });
     });
@@ -60,6 +66,7 @@ export default function App() {
   const refreshDatabase = async () => {
     const data = await getDashboardData();
     setDatabaseState({ loading: false, error: null, data });
+    setPendingChanges(await getPendingChangeCount());
     if (selectedClassId) setClassDetail(await getClassDetail(selectedClassId));
   };
   const filteredAssignments = useMemo(
@@ -80,7 +87,7 @@ export default function App() {
         </View>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
-            selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => { setSelectedAssignmentId(null); setActiveTab('Assignments'); }} onSubmitted={refreshDatabase} /> : <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectClass={(classId) => { setSelectedClassId(classId); setActiveTab('Classes'); }} onViewAllAssignments={() => setActiveTab('Assignments')} />
+            selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => { setSelectedAssignmentId(null); setActiveTab('Assignments'); }} onSubmitted={refreshDatabase} /> : <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} pendingChanges={pendingChanges} serverUrl={getConfiguredServerUrl()} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectClass={(classId) => { setSelectedClassId(classId); setActiveTab('Classes'); }} onViewAllAssignments={() => setActiveTab('Assignments')} />
           ) : activeTab === 'Calendar' ? (
             <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} onOpenAssignment={(assignmentId) => { setSelectedAssignmentId(assignmentId); setActiveTab('Assignments'); }} />
            ) : activeTab === 'Workspace' && role === 'administrator' ? (
@@ -93,13 +100,7 @@ export default function App() {
             selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => setSelectedAssignmentId(null)} onSubmitted={refreshDatabase} /> : selectedQuizId ? <QuizScreen quiz={(databaseState.data?.quizzes ?? []).find((item) => item.id === selectedQuizId)!} onBack={() => setSelectedQuizId(null)} onSubmitted={refreshDatabase} /> : <AssignmentsScreen assignments={databaseState.data?.assignments ?? []} quizzes={databaseState.data?.quizzes ?? []} completedQuizIds={databaseState.data?.completedQuizIds ?? []} classes={databaseState.data?.classes ?? []} onSelect={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectQuiz={(quiz) => setSelectedQuizId(quiz.id)} />
           ) : activeTab === 'Classes' ? (
             selectedAssignmentId && classDetail ? <SubmissionScreen assignment={classDetail.assignments.find((item) => item.id === selectedAssignmentId)!} onBack={() => setSelectedAssignmentId(null)} onSubmitted={refreshDatabase} /> : selectedMaterialId && classDetail ? <MaterialViewerScreen material={classDetail.materials.find((item) => item.id === selectedMaterialId)!} onBack={() => setSelectedMaterialId(null)} /> : selectedQuizId && classDetail ? <QuizScreen quiz={classDetail.quizzes.find((item) => item.id === selectedQuizId)!} onBack={() => setSelectedQuizId(null)} /> : selectedClassId && classDetail?.classRow ? <ClassDetailScreen classRow={classDetail.classRow} assignments={classDetail.assignments} materials={classDetail.materials} quizzes={classDetail.quizzes} onBack={() => setSelectedClassId(null)} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectMaterial={(material) => setSelectedMaterialId(material.id)} onSelectQuiz={(quiz) => setSelectedQuizId(quiz.id)} /> : <ClassesScreen classes={databaseState.data?.classes ?? []} assignments={databaseState.data?.assignments ?? []} onSelect={(classId) => setSelectedClassId(classId)} />
-          ) : (
-            <View style={styles.placeholder}>
-              <Text style={styles.placeholderEyebrow}>{activeTab.toUpperCase()}</Text>
-              <Text style={styles.placeholderTitle}>{activeTab} is ready for the next feature.</Text>
-              <Text style={styles.placeholderBody}>The navigation and local-first client foundation are in place.</Text>
-            </View>
-          )}
+          ) : null}
         </ScrollView>
         <NavigationBar activeTab={activeTab} onSelect={setActiveTab} role={role} />
       </View>
@@ -133,10 +134,6 @@ const styles = StyleSheet.create({
   pulse: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.green },
   serverText: { color: theme.colors.green, fontSize: 10, fontWeight: '700' },
   content: { padding: 18, paddingBottom: 28 },
-  placeholder: { backgroundColor: theme.colors.white, borderRadius: 14, borderWidth: 1, borderColor: theme.colors.line, padding: 24, marginTop: 20 },
-  placeholderEyebrow: { color: theme.colors.violet, fontSize: 10, fontWeight: '800', letterSpacing: 1.1 },
-  placeholderTitle: { color: theme.colors.ink, fontSize: 22, fontWeight: '800', marginTop: 10 },
-  placeholderBody: { color: theme.colors.muted, fontSize: 13, lineHeight: 20, marginTop: 10 },
   databaseMessage: { alignItems: 'center', paddingVertical: 40 },
   databaseMessageText: { color: theme.colors.muted, fontSize: 12, marginTop: 10, textAlign: 'center' },
   databaseError: { color: '#c45f69', fontSize: 15, fontWeight: '800' },

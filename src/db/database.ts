@@ -1,6 +1,7 @@
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
 import nacl from 'tweetnacl';
 import { assignments as seedAssignments, classes as seedClasses, type Assignment, type SubmissionType } from '../data/mockData';
+import { isProtectedJson, protectJson, unprotectJson } from '../services/dataProtection';
 
 export type SchoolClass = { id: string; name: string; sectionName: string | null; teacher: string; location: string; grade: string; color: 'purple' | 'blue' | 'green' | 'orange'; description: string };
 export type ClassMaterial = { id: string; classId: string; title: string; type: 'syllabus' | 'textbook' | 'resource'; uri: string | null; content: string };
@@ -14,6 +15,7 @@ export type QuizAttempt = { id: string; quizId: string; score: number | null; st
 export type LocalUser = { id: string; username: string; displayName: string; role: 'student' | 'teacher' | 'administrator'; active: boolean };
 export type RosterMember = LocalUser & { membershipRole: 'student' | 'teacher' };
 export type TeacherReview = { submission: Submission; studentName: string; assignmentTitle: string; feedback: string | null; grade: number | null };
+export type PendingOutboxChange = { id: string; type: string; payload: Record<string, unknown>; createdAt: string; attempts: number; lastError: string | null };
 
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
@@ -80,7 +82,9 @@ export async function initializeDatabase() {
       id TEXT PRIMARY KEY NOT NULL,
       type TEXT NOT NULL,
       payload TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
     );
     CREATE TABLE IF NOT EXISTS submissions (
       id TEXT PRIMARY KEY NOT NULL,
@@ -142,6 +146,7 @@ export async function initializeDatabase() {
   await ensureMaterialColumns(db);
   await ensureEventColumns(db);
   await ensureQuizAttemptColumns(db);
+  await ensureOutboxColumns(db);
 
   if (process.env.NODE_ENV !== 'production') await seedDatabase(db);
   await seedLocalUsers(db);
@@ -208,9 +213,20 @@ async function ensureAssignmentColumns(db: SQLiteDatabase) {
     ['submission_types', "TEXT NOT NULL DEFAULT '[\"file\"]'"],
     ['grade', 'INTEGER'],
     ['feedback', 'TEXT'],
+    ['protected_grade', 'TEXT'],
+    ['protected_feedback', 'TEXT'],
   ];
   for (const [name, definition] of additions) {
     if (!existing.has(name)) await db.execAsync(`ALTER TABLE assignments ADD COLUMN ${name} ${definition}`);
+  }
+  const legacyRows = await db.getAllAsync<{ id: string; grade: number | null; feedback: string | null; protectedGrade: string | null; protectedFeedback: string | null }>('SELECT id, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback FROM assignments');
+  for (const row of legacyRows) {
+    if (row.grade !== null && !row.protectedGrade) {
+      await db.runAsync('UPDATE assignments SET protected_grade = ?, grade = NULL WHERE id = ?', protectJson({ value: row.grade }), row.id);
+    }
+    if (row.feedback !== null && !row.protectedFeedback) {
+      await db.runAsync('UPDATE assignments SET protected_feedback = ?, feedback = NULL WHERE id = ?', protectJson({ value: row.feedback }), row.id);
+    }
   }
 }
 
@@ -218,6 +234,13 @@ async function ensureClassColumns(db: SQLiteDatabase) {
   const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(classes)');
   if (!columns.some((column) => column.name === 'section_name')) await db.execAsync('ALTER TABLE classes ADD COLUMN section_name TEXT');
   if (!columns.some((column) => column.name === 'description')) await db.execAsync("ALTER TABLE classes ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+}
+
+async function ensureOutboxColumns(db: SQLiteDatabase) {
+  const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(outbox)');
+  const existing = new Set(columns.map((column) => column.name));
+  if (!existing.has('attempts')) await db.execAsync('ALTER TABLE outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
+  if (!existing.has('last_error')) await db.execAsync('ALTER TABLE outbox ADD COLUMN last_error TEXT');
 }
 
 async function seedDatabase(db: SQLiteDatabase) {
@@ -247,7 +270,7 @@ async function seedDatabase(db: SQLiteDatabase) {
 
 export async function getDashboardData(): Promise<DashboardData> {
   const db = await getDatabase();
-  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback FROM assignments ORDER BY COALESCE(due_date, due)');
+  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback FROM assignments ORDER BY COALESCE(due_date, due)');
   const classRows = await db.getAllAsync<SchoolClass>('SELECT id, name, section_name AS sectionName, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes ORDER BY name');
   const eventRows = await db.getAllAsync<CalendarEventRow>('SELECT id, title, event_date AS date, event_time AS time, notes, kind, assignment_id AS assignmentId, local_only AS localOnlyValue FROM events ORDER BY event_date, event_time');
   const events = eventRows.map(mapCalendarEvent);
@@ -261,14 +284,14 @@ export async function applyServerSnapshot(snapshot: { assignments: Assignment[];
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     for (const item of snapshot.classes) await db.runAsync('INSERT OR REPLACE INTO classes (id, name, section_name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.name, item.sectionName ?? null, item.teacher, item.location, item.grade, item.color, item.description);
-    for (const item of snapshot.assignments) await db.runAsync('INSERT OR REPLACE INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.subject, item.teacher, item.due, item.completed ? 100 : 0, item.completed ? 'Completed' : 'In progress', item.completed ? 1 : 0, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), item.grade, item.feedback);
+    for (const item of snapshot.assignments) await db.runAsync('INSERT OR REPLACE INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback, protected_grade, protected_feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.subject, item.teacher, item.due, item.completed ? 100 : 0, item.completed ? 'Completed' : 'In progress', item.completed ? 1 : 0, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), null, null, item.grade === null ? null : protectJson({ value: item.grade }), item.feedback === null ? null : protectJson({ value: item.feedback }));
     await syncAssignmentEvents(db);
     for (const item of snapshot.events) await db.runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?, 0)', item.id, item.title, item.date, item.time ?? null, item.notes ?? '', item.kind, item.assignmentId ?? null);
     await db.runAsync('INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)', 'last_sync', new Date().toISOString());
   });
 }
 
-type AssignmentRow = Omit<Assignment, 'submissionTypes' | 'completed'> & { submissionTypesJson: string; classId: string | null; completedValue: number };
+type AssignmentRow = Omit<Assignment, 'submissionTypes' | 'completed'> & { submissionTypesJson: string; classId: string | null; completedValue: number; protectedGrade: string | null; protectedFeedback: string | null };
 type CalendarEventRow = Omit<CalendarEvent, 'localOnly'> & { localOnlyValue: number };
 
 function mapCalendarEvent(row: CalendarEventRow): CalendarEvent {
@@ -276,13 +299,17 @@ function mapCalendarEvent(row: CalendarEventRow): CalendarEvent {
 }
 
 function mapAssignment(row: AssignmentRow): Assignment {
-  return { ...row, completed: row.completedValue === 1, classId: row.classId ?? '', submissionTypes: JSON.parse(row.submissionTypesJson || '["file"]') as SubmissionType[] };
+  let grade = row.grade;
+  let feedback = row.feedback;
+  try { if (row.protectedGrade) grade = unprotectJson<{ value: number }>(row.protectedGrade).value; } catch (_) { grade = null; }
+  try { if (row.protectedFeedback) feedback = unprotectJson<{ value: string }>(row.protectedFeedback).value; } catch (_) { feedback = null; }
+  return { ...row, completed: row.completedValue === 1, classId: row.classId ?? '', submissionTypes: JSON.parse(row.submissionTypesJson || '["file"]') as SubmissionType[], grade, feedback };
 }
 
 export async function createAssignment(input: Omit<Assignment, 'id' | 'due'> & { id?: string; due?: string }) {
   const id = input.id ?? `assignment-${Date.now()}`;
   const due = input.due ?? `Due ${input.dueDate}`;
-  await (await getDatabase()).runAsync('INSERT INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.title, input.subject, input.teacher, due, input.completed ? 100 : 0, input.completed ? 'Completed' : 'In progress', input.completed ? 1 : 0, input.tone, input.classId, input.description, input.dueDate, JSON.stringify(input.submissionTypes), input.grade, input.feedback);
+  await (await getDatabase()).runAsync('INSERT INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback, protected_grade, protected_feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.title, input.subject, input.teacher, due, input.completed ? 100 : 0, input.completed ? 'Completed' : 'In progress', input.completed ? 1 : 0, input.tone, input.classId, input.description, input.dueDate, JSON.stringify(input.submissionTypes), null, null, input.grade === null ? null : protectJson({ value: input.grade }), input.feedback === null ? null : protectJson({ value: input.feedback }));
   await (await getDatabase()).runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', `assignment-event-${id}`, input.title, input.dueDate, null, input.description, 'assignment', id);
   return id;
 }
@@ -296,7 +323,7 @@ export async function createClass(input: Omit<SchoolClass, 'id'> & { id?: string
 export async function getClassDetail(classId: string) {
   const db = await getDatabase();
   const classRow = await db.getFirstAsync<SchoolClass>('SELECT id, name, section_name AS sectionName, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes WHERE id = ?', classId);
-  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback FROM assignments WHERE class_id = ? ORDER BY COALESCE(due_date, due)', classId);
+  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback FROM assignments WHERE class_id = ? ORDER BY COALESCE(due_date, due)', classId);
   const materials = await db.getAllAsync<ClassMaterial>('SELECT id, class_id AS classId, title, type, uri, COALESCE(content, \'\') AS content FROM class_materials WHERE class_id = ? ORDER BY title', classId);
   const quizRows = await db.getAllAsync<Omit<Quiz, 'questions'>>('SELECT id, class_id AS classId, title, description, due_date AS dueDate FROM quizzes WHERE class_id = ? ORDER BY due_date', classId);
   const quizzes = await Promise.all(quizRows.map(async (quiz) => ({ ...quiz, questions: await getQuizQuestions(quiz.id) })));
@@ -375,9 +402,10 @@ export async function createSubmission(input: Omit<Submission, 'id' | 'createdAt
   const createdAt = new Date().toISOString();
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
-    await db.runAsync('INSERT INTO submissions (id, assignment_id, kind, uri, file_name, mime_type, size, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.assignmentId, input.kind, input.uri, input.fileName, input.mimeType, input.size ?? null, input.content ?? null, createdAt, 'completed');
+    const protectedContent = input.content === null || input.content === undefined ? null : protectJson({ content: input.content });
+    await db.runAsync('INSERT INTO submissions (id, assignment_id, kind, uri, file_name, mime_type, size, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.assignmentId, input.kind, input.uri, input.fileName, input.mimeType, input.size ?? null, protectedContent, createdAt, 'completed');
     await db.runAsync('UPDATE assignments SET completed = 1, progress = 100, status = ? WHERE id = ?', 'Completed', input.assignmentId);
-    await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `submission-${id}`, 'submission', JSON.stringify({ id, assignmentId: input.assignmentId, kind: input.kind, uri: input.uri, content: input.content ?? null }), createdAt);
+    await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `submission-${id}`, 'submission', protectJson({ id, assignmentId: input.assignmentId, kind: input.kind, uri: input.uri, content: input.content ?? null }), createdAt);
   });
   return id;
 }
@@ -400,15 +428,40 @@ export async function deleteEvent(id: string) {
 export async function updateAssignmentCompletion(id: string, completed: boolean) {
   const db = await getDatabase();
   await db.runAsync('UPDATE assignments SET completed = ? WHERE id = ?', completed ? 1 : 0, id);
-  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `completion-${id}`, 'assignment-completion', JSON.stringify({ id, completed }), new Date().toISOString());
+  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `completion-${id}`, 'assignment-completion', protectJson({ id, completed }), new Date().toISOString());
 }
 
 export async function getPendingChangeCount() {
   return (await (await getDatabase()).getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM outbox'))?.count ?? 0;
 }
 
+export async function getPendingChanges() {
+  const rows = await (await getDatabase()).getAllAsync<{ id: string; type: string; payload: string; createdAt: string; attempts: number; lastError: string | null }>('SELECT id, type, payload, created_at AS createdAt, attempts, last_error AS lastError FROM outbox ORDER BY created_at');
+  const changes: PendingOutboxChange[] = [];
+  for (const row of rows) {
+    try {
+      const payload = isProtectedJson(row.payload)
+        ? unprotectJson<Record<string, unknown>>(row.payload)
+        : JSON.parse(row.payload) as Record<string, unknown>;
+      changes.push({ ...row, payload });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to read protected outbox data.';
+      await recordPendingChangeFailure(row.id, message);
+    }
+  }
+  return changes;
+}
+
+export async function recordPendingChangeFailure(id: string, error: string) {
+  await (await getDatabase()).runAsync('UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?', error, id);
+}
+
+export async function removePendingChange(id: string) {
+  await (await getDatabase()).runAsync('DELETE FROM outbox WHERE id = ?', id);
+}
+
 export async function enqueuePendingChange(change: { id: string; type: string; payload: Record<string, string | number | boolean>; createdAt: string }) {
-  await (await getDatabase()).runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', change.id, change.type, JSON.stringify(change.payload), change.createdAt);
+  await (await getDatabase()).runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', change.id, change.type, protectJson(change.payload), change.createdAt);
 }
 
 export async function clearPendingChanges() {
@@ -436,12 +489,15 @@ export async function saveClassMembership(classId: string, userId: string, membe
 export async function removeClassMembership(classId: string, userId: string) { await (await getDatabase()).runAsync('UPDATE class_memberships SET removed_at = ? WHERE class_id = ? AND user_id = ?', new Date().toISOString(), classId, userId); }
 
 export async function getTeacherReviews() {
-  const rows = await (await getDatabase()).getAllAsync<Submission & { studentName: string; assignmentTitle: string; grade: number | null; feedback: string | null }>("SELECT s.id, s.assignment_id AS assignmentId, s.kind, s.uri, s.file_name AS fileName, s.mime_type AS mimeType, s.size, s.created_at AS createdAt, s.status, COALESCE(u.display_name, 'Student') AS studentName, a.title AS assignmentTitle, a.grade, a.feedback FROM submissions s JOIN assignments a ON a.id = s.assignment_id LEFT JOIN users u ON u.role = 'student' ORDER BY s.created_at DESC");
-  return rows.map((row) => ({ submission: row, studentName: row.studentName, assignmentTitle: row.assignmentTitle, feedback: row.feedback, grade: row.grade }));
+  const rows = await (await getDatabase()).getAllAsync<Submission & { studentName: string; assignmentTitle: string; protectedGrade: string | null; protectedFeedback: string | null }>("SELECT s.id, s.assignment_id AS assignmentId, s.kind, s.uri, s.file_name AS fileName, s.mime_type AS mimeType, s.size, s.created_at AS createdAt, s.status, COALESCE(u.display_name, 'Student') AS studentName, a.title AS assignmentTitle, a.protected_grade AS protectedGrade, a.protected_feedback AS protectedFeedback FROM submissions s JOIN assignments a ON a.id = s.assignment_id LEFT JOIN users u ON u.role = 'student' ORDER BY s.created_at DESC");
+  return rows.map((row) => {
+    const assignment = mapAssignment({ id: '', title: '', subject: '', teacher: '', due: '', completedValue: 0, tone: 'math', classId: '', description: '', dueDate: '', submissionTypesJson: '["file"]', grade: null, feedback: null, protectedGrade: row.protectedGrade, protectedFeedback: row.protectedFeedback });
+    return { submission: row, studentName: row.studentName, assignmentTitle: row.assignmentTitle, feedback: assignment.feedback, grade: assignment.grade };
+  });
 }
 
 export async function saveGrade(assignmentId: string, grade: number | null, feedback: string, status: 'graded' | 'returned' | 'revision_requested') {
   const db = await getDatabase();
-  await db.runAsync('UPDATE assignments SET grade = ?, feedback = ?, status = ? WHERE id = ?', grade, feedback, status, assignmentId);
-  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `grade-${assignmentId}`, 'grade', JSON.stringify({ assignmentId, grade, feedback, status }), new Date().toISOString());
+  await db.runAsync('UPDATE assignments SET grade = NULL, feedback = NULL, protected_grade = ?, protected_feedback = ?, status = ? WHERE id = ?', grade === null ? null : protectJson({ value: grade }), protectJson({ value: feedback }), status, assignmentId);
+  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `grade-${assignmentId}`, 'grade', protectJson({ assignmentId, grade, feedback, status }), new Date().toISOString());
 }
