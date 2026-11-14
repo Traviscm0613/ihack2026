@@ -1,14 +1,16 @@
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
+import nacl from 'tweetnacl';
 import { assignments as seedAssignments, classes as seedClasses, type Assignment, type SubmissionType } from '../data/mockData';
 
-export type SchoolClass = { id: string; name: string; teacher: string; location: string; grade: string; color: 'purple' | 'blue' | 'green' | 'orange'; description: string };
+export type SchoolClass = { id: string; name: string; sectionName: string | null; teacher: string; location: string; grade: string; color: 'purple' | 'blue' | 'green' | 'orange'; description: string };
 export type ClassMaterial = { id: string; classId: string; title: string; type: 'syllabus' | 'textbook' | 'resource'; uri: string | null; content: string };
 export type QuizQuestionType = 'multiple_choice' | 'short_answer';
 export type QuizQuestion = { id: string; quizId: string; prompt: string; type: QuizQuestionType; options: string[]; correctAnswer: string | null; points: number };
 export type Quiz = { id: string; classId: string; title: string; description: string; dueDate: string; questions: QuizQuestion[] };
-export type CalendarEvent = { id: string; title: string; date: string; time?: string; notes?: string; kind: 'assignment' | 'class' | 'school'; assignmentId?: string };
-export type DashboardData = { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; events: CalendarEvent[] };
+export type CalendarEvent = { id: string; title: string; date: string; time?: string; notes?: string; kind: 'assignment' | 'class' | 'school'; assignmentId?: string; localOnly?: boolean };
+export type DashboardData = { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; events: CalendarEvent[]; quizzes: Quiz[]; completedQuizIds: string[] };
 export type Submission = { id: string; assignmentId: string; kind: SubmissionType; uri: string; fileName: string; mimeType: string; size: number | null; createdAt: string; status: 'completed' | 'pending' };
+export type QuizAttempt = { id: string; quizId: string; score: number | null; status: 'awaiting_feedback' | 'graded' | 'ungraded'; submittedAt: string };
 
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
@@ -33,6 +35,7 @@ export async function initializeDatabase() {
       due TEXT NOT NULL,
       progress INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
+      completed INTEGER NOT NULL DEFAULT 0,
       tone TEXT NOT NULL,
       class_id TEXT,
       description TEXT NOT NULL DEFAULT '',
@@ -44,6 +47,7 @@ export async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS classes (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
+      section_name TEXT,
       teacher TEXT NOT NULL,
       location TEXT NOT NULL,
       grade TEXT NOT NULL,
@@ -57,7 +61,8 @@ export async function initializeDatabase() {
       event_time TEXT,
       notes TEXT,
       kind TEXT NOT NULL,
-      assignment_id TEXT REFERENCES assignments(id)
+      assignment_id TEXT REFERENCES assignments(id),
+      local_only INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS outbox (
       id TEXT PRIMARY KEY NOT NULL,
@@ -115,6 +120,8 @@ export async function initializeDatabase() {
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
+    CREATE TRIGGER IF NOT EXISTS quiz_attempts_immutable_update BEFORE UPDATE ON quiz_attempts BEGIN SELECT RAISE(ABORT, 'Quiz attempts cannot be edited'); END;
+    CREATE TRIGGER IF NOT EXISTS quiz_attempts_immutable_delete BEFORE DELETE ON quiz_attempts BEGIN SELECT RAISE(ABORT, 'Quiz attempts cannot be deleted'); END;
   `);
 
   await ensureAssignmentColumns(db);
@@ -122,6 +129,7 @@ export async function initializeDatabase() {
   await ensureSubmissionColumns(db);
   await ensureMaterialColumns(db);
   await ensureEventColumns(db);
+  await ensureQuizAttemptColumns(db);
 
   if (process.env.NODE_ENV !== 'production') await seedDatabase(db);
 }
@@ -141,11 +149,22 @@ async function ensureEventColumns(db: SQLiteDatabase) {
   const existing = new Set(columns.map((column) => column.name));
   if (!existing.has('event_time')) await db.execAsync('ALTER TABLE events ADD COLUMN event_time TEXT');
   if (!existing.has('notes')) await db.execAsync("ALTER TABLE events ADD COLUMN notes TEXT NOT NULL DEFAULT ''");
+  if (!existing.has('local_only')) await db.execAsync('ALTER TABLE events ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0');
+}
+
+async function ensureQuizAttemptColumns(db: SQLiteDatabase) {
+  const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(quiz_attempts)');
+  const existing = new Set(columns.map((column) => column.name));
+  if (!existing.has('encrypted_answers')) await db.execAsync('ALTER TABLE quiz_attempts ADD COLUMN encrypted_answers TEXT');
+  if (!existing.has('nonce')) await db.execAsync('ALTER TABLE quiz_attempts ADD COLUMN nonce TEXT');
+  if (!existing.has('integrity_hash')) await db.execAsync('ALTER TABLE quiz_attempts ADD COLUMN integrity_hash TEXT');
 }
 
 async function ensureAssignmentColumns(db: SQLiteDatabase) {
   const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(assignments)');
   const existing = new Set(columns.map((column) => column.name));
+  if (!existing.has('completed')) await db.execAsync('ALTER TABLE assignments ADD COLUMN completed INTEGER NOT NULL DEFAULT 0');
+  await db.execAsync("UPDATE assignments SET completed = CASE WHEN progress >= 100 OR status = 'Completed' THEN 1 ELSE 0 END WHERE completed = 0 AND (progress >= 100 OR status = 'Completed')");
   const additions = [
     ['class_id', 'TEXT'],
     ['description', "TEXT NOT NULL DEFAULT ''"],
@@ -161,18 +180,19 @@ async function ensureAssignmentColumns(db: SQLiteDatabase) {
 
 async function ensureClassColumns(db: SQLiteDatabase) {
   const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(classes)');
+  if (!columns.some((column) => column.name === 'section_name')) await db.execAsync('ALTER TABLE classes ADD COLUMN section_name TEXT');
   if (!columns.some((column) => column.name === 'description')) await db.execAsync("ALTER TABLE classes ADD COLUMN description TEXT NOT NULL DEFAULT ''");
 }
 
 async function seedDatabase(db: SQLiteDatabase) {
-  const assignmentStatement = await db.prepareAsync('INSERT OR IGNORE INTO assignments (id, title, subject, teacher, due, progress, status, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const classStatement = await db.prepareAsync('INSERT OR IGNORE INTO classes (id, name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const assignmentStatement = await db.prepareAsync('INSERT OR IGNORE INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const classStatement = await db.prepareAsync('INSERT OR IGNORE INTO classes (id, name, section_name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   try {
-    for (const item of seedAssignments) await assignmentStatement.executeAsync(item.id, item.title, item.subject, item.teacher, item.due, item.progress, item.status, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), item.grade, item.feedback);
+    for (const item of seedAssignments) await assignmentStatement.executeAsync(item.id, item.title, item.subject, item.teacher, item.due, item.completed ? 100 : 0, item.completed ? 'Completed' : 'In progress', item.completed ? 1 : 0, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), item.grade, item.feedback);
     for (const [name, teacherAndLocation, grade, color] of seedClasses) {
       const index = seedClasses.findIndex((entry) => entry[0] === name);
       const [teacher, location] = teacherAndLocation.split(' · ');
-      await classStatement.executeAsync(`class-${index + 1}`, name, teacher, location, grade, color, `${name} course materials and class information.`);
+      await classStatement.executeAsync(`class-${index + 1}`, name, null, teacher, location, grade, color, `${name} course materials and class information.`);
     }
     await db.runAsync('INSERT OR IGNORE INTO events (id, title, event_date, kind, assignment_id) VALUES (?, ?, ?, ?, ?)', 'event-1', 'Quadratic equations practice due', '2026-11-13', 'assignment', 'algebra-1');
     await db.runAsync('INSERT OR IGNORE INTO class_materials (id, class_id, title, type, uri, content) VALUES (?, ?, ?, ?, ?, ?)', 'material-1', 'class-1', 'Algebra II syllabus', 'syllabus', null, 'Course overview, grading policy, classroom expectations, and the topics covered this semester.');
@@ -191,45 +211,54 @@ async function seedDatabase(db: SQLiteDatabase) {
 
 export async function getDashboardData(): Promise<DashboardData> {
   const db = await getDatabase();
-  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, progress, status, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback FROM assignments ORDER BY COALESCE(due_date, due)');
-  const classRows = await db.getAllAsync<SchoolClass>('SELECT id, name, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes ORDER BY name');
-  const events = await db.getAllAsync<CalendarEvent>('SELECT id, title, event_date AS date, event_time AS time, notes, kind, assignment_id AS assignmentId FROM events ORDER BY event_date, event_time');
-  return { assignments: assignmentRows.map(mapAssignment), classes: classRows, event: events[0] ?? null, events };
+  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback FROM assignments ORDER BY COALESCE(due_date, due)');
+  const classRows = await db.getAllAsync<SchoolClass>('SELECT id, name, section_name AS sectionName, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes ORDER BY name');
+  const eventRows = await db.getAllAsync<CalendarEventRow>('SELECT id, title, event_date AS date, event_time AS time, notes, kind, assignment_id AS assignmentId, local_only AS localOnlyValue FROM events ORDER BY event_date, event_time');
+  const events = eventRows.map(mapCalendarEvent);
+  const quizRows = await db.getAllAsync<Omit<Quiz, 'questions'>>('SELECT id, class_id AS classId, title, description, due_date AS dueDate FROM quizzes ORDER BY due_date');
+  const quizzes = await Promise.all(quizRows.map(async (quiz) => ({ ...quiz, questions: await getQuizQuestions(quiz.id) })));
+  const completedQuizRows = await db.getAllAsync<{ quizId: string }>('SELECT quiz_id AS quizId FROM quiz_attempts');
+  return { assignments: assignmentRows.map(mapAssignment), classes: classRows, event: events[0] ?? null, events, quizzes, completedQuizIds: completedQuizRows.map((row) => row.quizId) };
 }
 
 export async function applyServerSnapshot(snapshot: { assignments: Assignment[]; classes: SchoolClass[]; events: CalendarEvent[] }) {
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
-    for (const item of snapshot.classes) await db.runAsync('INSERT OR REPLACE INTO classes (id, name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?)', item.id, item.name, item.teacher, item.location, item.grade, item.color, item.description);
-    for (const item of snapshot.assignments) await db.runAsync('INSERT OR REPLACE INTO assignments (id, title, subject, teacher, due, progress, status, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.subject, item.teacher, item.due, item.progress, item.status, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), item.grade, item.feedback);
-    for (const item of snapshot.events) await db.runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.date, item.time ?? null, item.notes ?? '', item.kind, item.assignmentId ?? null);
+    for (const item of snapshot.classes) await db.runAsync('INSERT OR REPLACE INTO classes (id, name, section_name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.name, item.sectionName ?? null, item.teacher, item.location, item.grade, item.color, item.description);
+    for (const item of snapshot.assignments) await db.runAsync('INSERT OR REPLACE INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.subject, item.teacher, item.due, item.completed ? 100 : 0, item.completed ? 'Completed' : 'In progress', item.completed ? 1 : 0, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), item.grade, item.feedback);
+    for (const item of snapshot.events) await db.runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?, 0)', item.id, item.title, item.date, item.time ?? null, item.notes ?? '', item.kind, item.assignmentId ?? null);
     await db.runAsync('INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)', 'last_sync', new Date().toISOString());
   });
 }
 
-type AssignmentRow = Omit<Assignment, 'submissionTypes'> & { submissionTypesJson: string; classId: string | null };
+type AssignmentRow = Omit<Assignment, 'submissionTypes' | 'completed'> & { submissionTypesJson: string; classId: string | null; completedValue: number };
+type CalendarEventRow = Omit<CalendarEvent, 'localOnly'> & { localOnlyValue: number };
+
+function mapCalendarEvent(row: CalendarEventRow): CalendarEvent {
+  return { ...row, localOnly: row.localOnlyValue === 1 };
+}
 
 function mapAssignment(row: AssignmentRow): Assignment {
-  return { ...row, classId: row.classId ?? '', submissionTypes: JSON.parse(row.submissionTypesJson || '["file"]') as SubmissionType[] };
+  return { ...row, completed: row.completedValue === 1, classId: row.classId ?? '', submissionTypes: JSON.parse(row.submissionTypesJson || '["file"]') as SubmissionType[] };
 }
 
 export async function createAssignment(input: Omit<Assignment, 'id' | 'due'> & { id?: string; due?: string }) {
   const id = input.id ?? `assignment-${Date.now()}`;
   const due = input.due ?? `Due ${input.dueDate}`;
-  await (await getDatabase()).runAsync('INSERT INTO assignments (id, title, subject, teacher, due, progress, status, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.title, input.subject, input.teacher, due, input.progress, input.status, input.tone, input.classId, input.description, input.dueDate, JSON.stringify(input.submissionTypes), input.grade, input.feedback);
+  await (await getDatabase()).runAsync('INSERT INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.title, input.subject, input.teacher, due, input.completed ? 100 : 0, input.completed ? 'Completed' : 'In progress', input.completed ? 1 : 0, input.tone, input.classId, input.description, input.dueDate, JSON.stringify(input.submissionTypes), input.grade, input.feedback);
   return id;
 }
 
 export async function createClass(input: Omit<SchoolClass, 'id'> & { id?: string }) {
   const id = input.id ?? `class-${Date.now()}`;
-  await (await getDatabase()).runAsync('INSERT INTO classes (id, name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?)', id, input.name, input.teacher, input.location, input.grade, input.color, input.description);
+  await (await getDatabase()).runAsync('INSERT INTO classes (id, name, section_name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, input.name, input.sectionName ?? null, input.teacher, input.location, input.grade, input.color, input.description);
   return id;
 }
 
 export async function getClassDetail(classId: string) {
   const db = await getDatabase();
-  const classRow = await db.getFirstAsync<SchoolClass>('SELECT id, name, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes WHERE id = ?', classId);
-  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, progress, status, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback FROM assignments WHERE class_id = ? ORDER BY COALESCE(due_date, due)', classId);
+  const classRow = await db.getFirstAsync<SchoolClass>('SELECT id, name, section_name AS sectionName, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes WHERE id = ?', classId);
+  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback FROM assignments WHERE class_id = ? ORDER BY COALESCE(due_date, due)', classId);
   const materials = await db.getAllAsync<ClassMaterial>('SELECT id, class_id AS classId, title, type, uri, COALESCE(content, \'\') AS content FROM class_materials WHERE class_id = ? ORDER BY title', classId);
   const quizRows = await db.getAllAsync<Omit<Quiz, 'questions'>>('SELECT id, class_id AS classId, title, description, due_date AS dueDate FROM quizzes WHERE class_id = ? ORDER BY due_date', classId);
   const quizzes = await Promise.all(quizRows.map(async (quiz) => ({ ...quiz, questions: await getQuizQuestions(quiz.id) })));
@@ -251,22 +280,56 @@ export async function createQuiz(input: { id?: string; classId: string; title: s
   return id;
 }
 
+function bytesToBase64(bytes: Uint8Array) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let output = '';
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index];
+    const second = bytes[index + 1];
+    const third = bytes[index + 2];
+    output += alphabet[first >> 2];
+    output += alphabet[((first & 3) << 4) | ((second ?? 0) >> 4)];
+    output += second === undefined ? '=' : alphabet[((second & 15) << 2) | ((third ?? 0) >> 6)];
+    output += third === undefined ? '=' : alphabet[third & 63];
+  }
+  return output;
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+const quizStorageKey = nacl.hash(new TextEncoder().encode('LocalLearn quiz attempt key')).slice(0, nacl.secretbox.keyLength);
+
+export async function getQuizAttempt(quizId: string) {
+  return (await (await getDatabase()).getFirstAsync<QuizAttempt>('SELECT id, quiz_id AS quizId, score, status, created_at AS submittedAt FROM quiz_attempts WHERE quiz_id = ? ORDER BY rowid LIMIT 1', quizId)) ?? null;
+}
+
 export async function submitQuizAttempt(quiz: Quiz, answers: Record<string, string>) {
+  const existing = await getQuizAttempt(quiz.id);
+  if (existing) return { ...existing, alreadySubmitted: true as const };
   const score = quiz.questions.reduce((total, question) => total + (question.type === 'multiple_choice' && answers[question.id] === question.correctAnswer ? question.points : 0), 0);
   const hasShortAnswer = quiz.questions.some((question) => question.type === 'short_answer');
   const id = `attempt-${Date.now()}`;
-  await (await getDatabase()).runAsync('INSERT INTO quiz_attempts (id, quiz_id, answers, score, graded, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, quiz.id, JSON.stringify(answers), hasShortAnswer ? null : score, hasShortAnswer ? 0 : 1, hasShortAnswer ? 'ungraded' : 'graded', new Date().toISOString());
-  return { id, score: hasShortAnswer ? null : score, status: hasShortAnswer ? 'ungraded' as const : 'graded' as const };
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const encryptedAnswers = nacl.secretbox(new TextEncoder().encode(JSON.stringify(answers)), nonce, quizStorageKey);
+  const encrypted = bytesToBase64(encryptedAnswers);
+  const nonceValue = bytesToBase64(nonce);
+  const integrityHash = bytesToHex(nacl.hash(new TextEncoder().encode(`${id}:${quiz.id}:${nonceValue}:${encrypted}`)));
+  const submittedAt = new Date().toISOString();
+  const db = await getDatabase();
+  await db.runAsync('INSERT INTO quiz_attempts (id, quiz_id, answers, encrypted_answers, nonce, integrity_hash, score, graded, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, quiz.id, 'ENCRYPTED', encrypted, nonceValue, integrityHash, hasShortAnswer ? null : score, 0, 'awaiting_feedback', submittedAt);
+  return { id, quizId: quiz.id, score: hasShortAnswer ? null : score, status: 'awaiting_feedback' as const, submittedAt, alreadySubmitted: false as const };
 }
 
 export async function createEvent(input: Omit<CalendarEvent, 'id'> & { id?: string }) {
   const id = input.id ?? `event-${Date.now()}`;
-  await (await getDatabase()).runAsync('INSERT INTO events (id, title, event_date, event_time, notes, kind, assignment_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, input.title, input.date, input.time ?? null, input.notes ?? '', input.kind, input.assignmentId ?? null);
+  await (await getDatabase()).runAsync('INSERT INTO events (id, title, event_date, event_time, notes, kind, assignment_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, input.title, input.date, input.time ?? null, input.notes ?? '', input.kind, input.assignmentId ?? null, input.localOnly ? 1 : 0);
   return id;
 }
 
 export async function updateEvent(id: string, input: Omit<CalendarEvent, 'id'>) {
-  await (await getDatabase()).runAsync('UPDATE events SET title = ?, event_date = ?, event_time = ?, notes = ?, kind = ?, assignment_id = ? WHERE id = ?', input.title, input.date, input.time ?? null, input.notes ?? '', input.kind, input.assignmentId ?? null, id);
+  await (await getDatabase()).runAsync('UPDATE events SET title = ?, event_date = ?, event_time = ?, notes = ?, kind = ?, assignment_id = ? WHERE id = ? AND local_only = 1', input.title, input.date, input.time ?? null, input.notes ?? '', input.kind, input.assignmentId ?? null, id);
 }
 
 export async function createSubmission(input: Omit<Submission, 'id' | 'createdAt' | 'status'> & { id?: string; content?: string | null }) {
@@ -275,7 +338,7 @@ export async function createSubmission(input: Omit<Submission, 'id' | 'createdAt
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     await db.runAsync('INSERT INTO submissions (id, assignment_id, kind, uri, file_name, mime_type, size, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.assignmentId, input.kind, input.uri, input.fileName, input.mimeType, input.size ?? null, input.content ?? null, createdAt, 'completed');
-    await db.runAsync('UPDATE assignments SET progress = 100, status = ? WHERE id = ?', 'Completed', input.assignmentId);
+    await db.runAsync('UPDATE assignments SET completed = 1, progress = 100, status = ? WHERE id = ?', 'Completed', input.assignmentId);
     await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `submission-${id}`, 'submission', JSON.stringify({ id, assignmentId: input.assignmentId, kind: input.kind, uri: input.uri, content: input.content ?? null }), createdAt);
   });
   return id;
@@ -286,20 +349,20 @@ export async function getSubmissions(assignmentId: string) {
 }
 
 export async function deleteEvent(id: string) {
-  await (await getDatabase()).runAsync('DELETE FROM events WHERE id = ?', id);
+  await (await getDatabase()).runAsync('DELETE FROM events WHERE id = ? AND local_only = 1', id);
 }
 
-export async function updateAssignmentProgress(id: string, progress: number, status: Assignment['status']) {
+export async function updateAssignmentCompletion(id: string, completed: boolean) {
   const db = await getDatabase();
-  await db.runAsync('UPDATE assignments SET progress = ?, status = ? WHERE id = ?', progress, status, id);
-  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `progress-${id}`, 'assignment-progress', JSON.stringify({ id, progress, status }), new Date().toISOString());
+  await db.runAsync('UPDATE assignments SET completed = ? WHERE id = ?', completed ? 1 : 0, id);
+  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `completion-${id}`, 'assignment-completion', JSON.stringify({ id, completed }), new Date().toISOString());
 }
 
 export async function getPendingChangeCount() {
   return (await (await getDatabase()).getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM outbox'))?.count ?? 0;
 }
 
-export async function enqueuePendingChange(change: { id: string; type: string; payload: Record<string, string | number>; createdAt: string }) {
+export async function enqueuePendingChange(change: { id: string; type: string; payload: Record<string, string | number | boolean>; createdAt: string }) {
   await (await getDatabase()).runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', change.id, change.type, JSON.stringify(change.payload), change.createdAt);
 }
 
