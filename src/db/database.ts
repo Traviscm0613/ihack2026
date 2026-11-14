@@ -11,6 +11,9 @@ export type CalendarEvent = { id: string; title: string; date: string; time?: st
 export type DashboardData = { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; events: CalendarEvent[]; quizzes: Quiz[]; completedQuizIds: string[] };
 export type Submission = { id: string; assignmentId: string; kind: SubmissionType; uri: string; fileName: string; mimeType: string; size: number | null; createdAt: string; status: 'completed' | 'pending' };
 export type QuizAttempt = { id: string; quizId: string; score: number | null; status: 'awaiting_feedback' | 'graded' | 'ungraded'; submittedAt: string };
+export type LocalUser = { id: string; username: string; displayName: string; role: 'student' | 'teacher' | 'administrator'; active: boolean };
+export type RosterMember = LocalUser & { membershipRole: 'student' | 'teacher' };
+export type TeacherReview = { submission: Submission; studentName: string; assignmentTitle: string; feedback: string | null; grade: number | null };
 
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
@@ -53,6 +56,15 @@ export async function initializeDatabase() {
       grade TEXT NOT NULL,
       color TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('student','teacher','administrator')), active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS class_memberships (
+      class_id TEXT NOT NULL REFERENCES classes(id), user_id TEXT NOT NULL REFERENCES users(id),
+      membership_role TEXT NOT NULL CHECK (membership_role IN ('student','teacher')), removed_at TEXT,
+      PRIMARY KEY (class_id, user_id)
     );
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY NOT NULL,
@@ -132,7 +144,19 @@ export async function initializeDatabase() {
   await ensureQuizAttemptColumns(db);
 
   if (process.env.NODE_ENV !== 'production') await seedDatabase(db);
+  await seedLocalUsers(db);
   await syncAssignmentEvents(db);
+}
+
+async function seedLocalUsers(db: SQLiteDatabase) {
+  await db.runAsync("INSERT OR IGNORE INTO users (id, username, display_name, role) VALUES ('demo-student','student','Demo Student','student'),('demo-teacher','teacher','Demo Teacher','teacher'),('demo-admin','admin','School Administrator','administrator')");
+  const teacher = await db.getFirstAsync<{ id: string }>("SELECT id FROM users WHERE role = 'teacher' LIMIT 1");
+  const student = await db.getFirstAsync<{ id: string }>("SELECT id FROM users WHERE role = 'student' LIMIT 1");
+  const classes = await db.getAllAsync<{ id: string }>('SELECT id FROM classes');
+  for (const item of classes) {
+    if (teacher) await db.runAsync("INSERT OR IGNORE INTO class_memberships (class_id,user_id,membership_role) VALUES (?,?,'teacher')", item.id, teacher.id);
+    if (student) await db.runAsync("INSERT OR IGNORE INTO class_memberships (class_id,user_id,membership_role) VALUES (?,?,'student')", item.id, student.id);
+  }
 }
 
 async function syncAssignmentEvents(db: SQLiteDatabase) {
@@ -389,4 +413,35 @@ export async function enqueuePendingChange(change: { id: string; type: string; p
 
 export async function clearPendingChanges() {
   await (await getDatabase()).runAsync('DELETE FROM outbox');
+}
+
+export async function getLocalUsers() {
+  return (await (await getDatabase()).getAllAsync<LocalUser>('SELECT id, username, display_name AS displayName, role, active FROM users ORDER BY role, display_name')).map((user) => ({ ...user, active: Boolean(user.active) }));
+}
+
+export async function saveLocalUser(input: Omit<LocalUser, 'id' | 'active'> & { id?: string; active?: boolean }) {
+  const id = input.id ?? `user-${Date.now()}`;
+  await (await getDatabase()).runAsync('INSERT OR REPLACE INTO users (id, username, display_name, role, active) VALUES (?, ?, ?, ?, ?)', id, input.username, input.displayName, input.role, input.active === false ? 0 : 1);
+  return id;
+}
+
+export async function setLocalUserActive(id: string, active: boolean) { await (await getDatabase()).runAsync('UPDATE users SET active = ? WHERE id = ?', active ? 1 : 0, id); }
+
+export async function getClassRoster(classId: string) {
+  return (await (await getDatabase()).getAllAsync<RosterMember>('SELECT u.id, u.username, u.display_name AS displayName, u.role, u.active, m.membership_role AS membershipRole FROM users u JOIN class_memberships m ON m.user_id = u.id WHERE m.class_id = ? AND m.removed_at IS NULL ORDER BY m.membership_role, u.display_name', classId)).map((member) => ({ ...member, active: Boolean(member.active) }));
+}
+
+export async function saveClassMembership(classId: string, userId: string, membershipRole: 'student' | 'teacher') { await (await getDatabase()).runAsync('INSERT OR REPLACE INTO class_memberships (class_id, user_id, membership_role, removed_at) VALUES (?, ?, ?, NULL)', classId, userId, membershipRole); }
+
+export async function removeClassMembership(classId: string, userId: string) { await (await getDatabase()).runAsync('UPDATE class_memberships SET removed_at = ? WHERE class_id = ? AND user_id = ?', new Date().toISOString(), classId, userId); }
+
+export async function getTeacherReviews() {
+  const rows = await (await getDatabase()).getAllAsync<Submission & { studentName: string; assignmentTitle: string; grade: number | null; feedback: string | null }>("SELECT s.id, s.assignment_id AS assignmentId, s.kind, s.uri, s.file_name AS fileName, s.mime_type AS mimeType, s.size, s.created_at AS createdAt, s.status, COALESCE(u.display_name, 'Student') AS studentName, a.title AS assignmentTitle, a.grade, a.feedback FROM submissions s JOIN assignments a ON a.id = s.assignment_id LEFT JOIN users u ON u.role = 'student' ORDER BY s.created_at DESC");
+  return rows.map((row) => ({ submission: row, studentName: row.studentName, assignmentTitle: row.assignmentTitle, feedback: row.feedback, grade: row.grade }));
+}
+
+export async function saveGrade(assignmentId: string, grade: number | null, feedback: string, status: 'graded' | 'returned' | 'revision_requested') {
+  const db = await getDatabase();
+  await db.runAsync('UPDATE assignments SET grade = ?, feedback = ?, status = ? WHERE id = ?', grade, feedback, status, assignmentId);
+  await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `grade-${assignmentId}`, 'grade', JSON.stringify({ assignmentId, grade, feedback, status }), new Date().toISOString());
 }

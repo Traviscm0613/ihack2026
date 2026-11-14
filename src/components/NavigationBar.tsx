@@ -3,9 +3,11 @@ import { faCalendarDays, faChalkboard, faGears, faHouse, faListCheck } from '@fo
 import { AppIcon } from './AppIcon';
 import { theme } from '../theme';
 
-const tabs = [['Dashboard', faHouse], ['Calendar', faCalendarDays], ['Assignments', faListCheck], ['Classes', faChalkboard], ['Developer', faGears]] as const;
+const studentTabs = [['Dashboard', faHouse], ['Calendar', faCalendarDays], ['Assignments', faListCheck], ['Classes', faChalkboard], ['Developer', faGears]] as const;
+const staffTabs = [['Dashboard', faHouse], ['Calendar', faCalendarDays], ['Classes', faChalkboard], ['Workspace', faGears]] as const;
 
-export function NavigationBar({ activeTab, onSelect }: { activeTab: string; onSelect: (tab: string) => void }) {
+export function NavigationBar({ activeTab, onSelect, role = 'student' }: { activeTab: string; onSelect: (tab: string) => void; role?: 'student' | 'teacher' | 'administrator' }) {
+  const tabs = role === 'student' ? studentTabs : staffTabs;
   return <View style={styles.bar}>{tabs.map(([label, icon]) => <Pressable key={label} style={styles.item} onPress={() => onSelect(label)}><AppIcon icon={icon} size={17} color={activeTab === label ? theme.colors.violet : theme.colors.muted} /><Text style={[styles.label, activeTab === label && styles.active]}>{label}</Text></Pressable>)}</View>;
 }
 

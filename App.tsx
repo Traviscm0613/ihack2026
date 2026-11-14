@@ -15,9 +15,13 @@ import { MaterialViewerScreen } from './src/screens/MaterialViewerScreen';
 import { QuizScreen } from './src/screens/QuizScreen';
 import { getConfiguredServerUrl, fetchServerSnapshot } from './src/services/serverApi';
 import { CalendarScreen } from './src/screens/CalendarScreen';
+import { AdministratorScreen } from './src/screens/AdministratorScreen';
+import { TeacherScreen } from './src/screens/TeacherScreen';
+import type { UserRole } from './src/services/serverApi';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
+  const [role, setRole] = useState<UserRole>('student');
   const [themeVersion, setThemeVersion] = useState(0);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
@@ -72,13 +76,17 @@ export default function App() {
             <Text style={styles.brand}>LocalLearn</Text>
             <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
-          <View style={styles.headerTools}><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
+          <View style={styles.headerTools}><Pressable style={styles.roleButton} onPress={() => { const next = role === 'student' ? 'teacher' : role === 'teacher' ? 'administrator' : 'student'; setRole(next); setActiveTab(next === 'student' ? 'Dashboard' : 'Workspace'); }}><Text style={styles.roleLabel}>{role}</Text></Pressable><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
         </View>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
             selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => { setSelectedAssignmentId(null); setActiveTab('Assignments'); }} onSubmitted={refreshDatabase} /> : <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectClass={(classId) => { setSelectedClassId(classId); setActiveTab('Classes'); }} onViewAllAssignments={() => setActiveTab('Assignments')} />
           ) : activeTab === 'Calendar' ? (
             <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} onOpenAssignment={(assignmentId) => { setSelectedAssignmentId(assignmentId); setActiveTab('Assignments'); }} />
+           ) : activeTab === 'Workspace' && role === 'administrator' ? (
+            <AdministratorScreen onSaved={refreshDatabase} />
+          ) : activeTab === 'Workspace' && role === 'teacher' ? (
+            <TeacherScreen classes={databaseState.data?.classes ?? []} onSaved={refreshDatabase} />
           ) : activeTab === 'Developer' ? (
             <DebugScreen classes={databaseState.data?.classes ?? []} onSaved={refreshDatabase} />
           ) : activeTab === 'Assignments' ? (
@@ -93,7 +101,7 @@ export default function App() {
             </View>
           )}
         </ScrollView>
-        <NavigationBar activeTab={activeTab} onSelect={setActiveTab} />
+        <NavigationBar activeTab={activeTab} onSelect={setActiveTab} role={role} />
       </View>
     </SafeAreaView>
   );
@@ -104,6 +112,8 @@ const styles = StyleSheet.create({
   app: { flex: 1 },
   header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 },
   headerTools: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  roleButton: { borderWidth: 1, borderColor: theme.colors.violet, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
+  roleLabel: { color: theme.colors.violet, fontSize: 9, fontWeight: '800', textTransform: 'uppercase' },
   themePicker: { position: 'relative', zIndex: 20 },
   themePickerButton: { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: 145, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6, backgroundColor: theme.colors.white },
   themePickerLabel: { color: theme.colors.muted, fontSize: 9, fontWeight: '800' },
