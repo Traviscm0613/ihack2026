@@ -94,7 +94,7 @@ The client uses Expo SQLite for its local database. The initial schema includes:
 
 Database changes should be introduced through versioned migrations. The client database is a cache and work area, not a replacement for server authorization. The local outbox must use stable IDs so retries do not create duplicate records.
 
-The first assignment workflow supports file uploads, pictures, and document scans. Text-editor submissions, quizzes, and other media types remain future additions.
+The assignment workflow supports file uploads, pictures, document scans, and written responses saved as text files. Quizzes support multiple-choice, true/false, and written answers. Large audio/video and collaborative documents remain future additions.
 
 The assignments view groups completion by class. Each class displays a completion ring calculated as completed assignments divided by total assignments for that class. Assignment UI should show only whether work is completed; a work-progress percentage is not part of the student workflow. Developer tools can create local test classes with a name, teacher, location, grade, and color. Quizzes are included in the assignments view as due work items and retain their own quiz flow and due dates. The default assignments filter hides completed assignments and quizzes; the Completed filter shows both, using immutable local quiz-attempt records to determine quiz completion.
 
@@ -240,7 +240,7 @@ Students should not be required to own a phone. The application can support seve
 3.  **Student-owned low-cost devices** — Any supported Android or iOS phone or tablet can connect when available.
 4.  **Teacher-assisted submission** — A teacher can upload physical work or enter a submission on behalf of a student when necessary.
 
-Shared devices must support logout, automatic session expiration, and separation of one student's files from another student's account.
+Shared devices support manual logout and separation of each account's cache and files. Once signed in, the application restores that account without contacting the Pi and keeps it signed in until manual logout. Sessions have no idle expiry and survive Pi restarts. Server account disablement and class authorization still apply when reconnecting. This persistent-login policy supersedes the earlier automatic-expiration requirement.
 
 ## Local synchronization model
 
@@ -289,7 +289,16 @@ The minimum viable product should include:
 
 Native support for additional platforms, advanced quizzes, and large media uploads should be evaluated after the local workflow is reliable. Internet connectivity and cloud synchronization are not requirements for the MVP.
 
-### Current quiz and grading decisions
+### Implemented offline behavior
+
+- First sign-in authenticates over the school LAN; subsequent launches restore the saved session and encryption key from the device SQLite settings database without requiring internet or a reachable Pi. No plaintext login password is saved. The saved key and session are protected by the device's application storage permissions, not a hardware keystore.
+- The account cache opens before background network discovery/sync. Teacher assignment/quiz/material drafts and student written/quiz drafts save locally. Teacher creation, grades, enrollment changes, and student submissions enter the encrypted outbox with stable IDs. A background worker retries every 20 seconds while the app is running, and the refresh button retries immediately.
+- Assignment creation includes a local-time due date/time, description, allowed file/photo/scan types, late/resubmission rules, and multiple reference documents. Browser attachments are retained as data URLs in encrypted cache records; native attachments are copied to the documents directory.
+- Teacher resources and reviewed student files download into the account's offline cache when fetched while connected. Files never downloaded to a device require one connection before they can be opened offline.
+- Submitted means that both the submission record and its uploaded file attachment exist on the Pi. Locally queued work is displayed separately. Objective quizzes are graded on the server; written answers await teacher review. Immutable local attempt payloads are not rewritten when authoritative results arrive.
+- Production Android builds include the application code and start without a network. For browser cold starts, build with `npm run build:web:offline`, serve the generated `dist/` through the Pi, and use HTTPS with a browser-trusted certificate so the browser can install the service worker and enable SQLite's cross-origin-isolated worker. Plain HTTP on `photobooth.local` cannot provide browser offline cold starts or a secure context. Native APKs remain the first target.
+
+### Quiz and grading rules
 
 - A quiz may be opened and submitted only once per student. A previously submitted quiz is read as locked and displays that it is awaiting teacher feedback.
 - Quiz answers are stored locally as an encrypted payload with a nonce and integrity hash. SQLite triggers prevent quiz-attempt rows from being edited or deleted after insertion.

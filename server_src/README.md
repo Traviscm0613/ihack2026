@@ -4,7 +4,17 @@
 
 All students and staff now sign in through the application's login screen. The server supplies the role; the role switcher and student developer tab have been removed. Do not bundle shared usernames or passwords in Expo environment variables. `EXPO_PUBLIC_LMS_SERVER_URL=http://photobooth.local:9000` remains the optional server override.
 
-Create the first administrator using the bootstrap command below. Sign in as that administrator, open Workspace, create teacher/student accounts, assign a teacher when creating a class, and enroll students. Teachers see only their own classes and students see only enrolled classes. Each signed-in account uses a separate device cache. Sessions expire after eight hours and are invalidated by logout or a server restart.
+Create the first administrator using the bootstrap command below. Sign in as that administrator, open Workspace, create teacher/student accounts, assign a teacher when creating a class, and enroll students. Teachers see only their own classes and students see only enrolled classes. Each signed-in account uses a separate device cache. Sessions persist in SQLite across Pi restarts, with no automatic expiry; the app restores its login and cache offline until the user manually signs out. Disabled accounts are still denied server access.
+
+## Offline builds and classroom documents
+
+Teachers can draft assignments with descriptions, due dates/times, late/resubmission rules, allowed submission types, and document attachments. The question builder supports multiple-choice, true/false, and written answers. Drafts, grades, quizzes, and pending uploads are saved locally and retried automatically while the app is open. Students can open downloaded assignment resources and submit files or written responses offline; the Pi confirms final receipt after reconnecting.
+
+Build native Android APKs for reliable offline launches without any web server. For production web, run `npm run build:web:offline` on the build machine and copy the resulting `dist/` folder alongside `server_src/` on the Pi. The API serves that folder on port 9000 and sends the cross-origin isolation headers needed by Expo SQLite. Override its location with `LOCALLEARN_WEB_DIR` if necessary. Serve it through HTTPS with a browser-trusted certificate for service-worker installation and offline browser reloads; HTTP on a LAN hostname does not satisfy browser secure-context requirements. Keep the API and web app under the same HTTPS origin, or explicitly configure the HTTPS API URL in the build. No internet service is needed at runtime.
+
+Only files already downloaded to the device are available offline. Keep the app connected once while its documents download. Browser storage clearing, app uninstall, or deleting application data removes the saved login and local unsent work.
+
+Verification: `npm run typecheck`, `npm run test:offline`, and `python3 -m unittest server_src.test_access -v`.
 
 Students select a file and confirm submission. The encrypted local outbox retains work until the authenticated file upload, submission receipt, and file attachment all succeed. Teachers open Workspace to download original files, write feedback, assign grades, return work, or request revisions. Student snapshots include authoritative grades and feedback. The teacher workspace also publishes text materials and written-answer quizzes and reviews quiz responses; multiple-choice quiz scoring happens on the server.
 

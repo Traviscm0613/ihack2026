@@ -14,7 +14,7 @@ import { ClassesScreen } from './src/screens/ClassesScreen';
 import { ClassDetailScreen } from './src/screens/ClassDetailScreen';
 import { MaterialViewerScreen } from './src/screens/MaterialViewerScreen';
 import { QuizScreen } from './src/screens/QuizScreen';
-import { getConfiguredServerUrl, fetchServerSnapshot, LocalServerClient, resolveServerUrl } from './src/services/serverApi';
+import { getConfiguredServerUrl, LocalServerClient, restoreServerConnection } from './src/services/serverApi';
 import { CalendarScreen } from './src/screens/CalendarScreen';
 import { AdministratorScreen } from './src/screens/AdministratorScreen';
 import { TeacherScreen } from './src/screens/TeacherScreen';
@@ -22,13 +22,26 @@ import { type UserRole } from './src/services/serverApi';
 import { syncQueue } from './src/services/syncQueue';
 import {LoginScreen} from './src/screens/LoginScreen';
 import type {Session} from './src/services/serverApi';
+import {readSession, clearSession} from './src/services/sessionStorage';
+import {selectUserDatabase} from './src/db/database';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator && globalThis.isSecureContext) {
+      void navigator.serviceWorker.register('/sw.js').catch(console.warn);
+    }
+  }, []);
+  useEffect(() => {readSession().then(async saved => {
+    if (saved) {restoreServerConnection(saved.serverUrl, saved.token); await selectUserDatabase(saved.user.id); setSession(saved);}
+  }).catch(console.warn).finally(() => setRestoring(false));}, []);
+  if (restoring) return <SafeAreaView style={{flex: 1, justifyContent: 'center'}}><ActivityIndicator/></SafeAreaView>;
   if (!session) return <LoginScreen onLogin={setSession}/>;
   return <AuthenticatedApp key={session.user.id} session={session} onLogout={() => {
     const client = new LocalServerClient();
     void client.logout().catch(() => {});
+    void clearSession();
     client.setToken(null); setSession(null);
   }}/>;
 }
@@ -46,20 +59,10 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
   const [query, setQuery] = useState('');
   const [databaseState, setDatabaseState] = useState<{ loading: boolean; error: string | null; data: DashboardData | null }>({ loading: true, error: null, data: null });
   const [pendingChanges, setPendingChanges] = useState(0);
+  const [connectionStatus, setConnectionStatus] = useState('Offline cache');
   useEffect(() => {
     let active = true;
     initializeDatabase().then(async () => {
-      const serverUrl = await resolveServerUrl();
-      if (serverUrl) {
-        try {
-          let authenticated = true;
-          const client = new LocalServerClient(serverUrl);
-          await applyServerSnapshot(await fetchServerSnapshot(serverUrl));
-          if (authenticated) await syncQueue.flush(new LocalServerClient(serverUrl));
-        } catch (error) {
-          console.warn('Raspberry Pi sync unavailable; using the local cache.', error);
-        }
-      }
       return Promise.all([getDashboardData(), getPendingChangeCount()]);
     }).then(([data, pending]) => {
       if (active) {
@@ -80,14 +83,33 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
   }, [selectedClassId, databaseState.data]);
   const refreshDatabase = async () => {
     try {
-      await syncQueue.flush(new LocalServerClient());
-      await applyServerSnapshot(await new LocalServerClient().snapshot());
-    } catch(error) {console.warn('Offline; showing this account’s cache', error);}
+      const client = new LocalServerClient();
+      await syncQueue.flush(client);
+      const snapshot = await client.snapshot();
+      await applyServerSnapshot(snapshot);
+      setConnectionStatus(client.fromCache ? 'Offline cache' : 'Pi connected');
+      if (!client.fromCache && role === 'teacher') {
+        await Promise.allSettled([
+          ...snapshot.classes.map(c => client.roster(c.id)),
+          ...snapshot.assignments.map(a => client.submissions(a.id)),
+          ...(snapshot.quizzes ?? []).map(q => client.quizReviews(q.id)),
+        ]);
+      }
+      if (!client.fromCache && role === 'administrator') await client.adminOverview();
+    } catch(error) {setConnectionStatus('Offline cache'); console.warn('Offline; showing this account’s cache', error);}
     const data = await getDashboardData();
     setDatabaseState({ loading: false, error: null, data });
     setPendingChanges(await getPendingChangeCount());
     if (selectedClassId) setClassDetail(await getClassDetail(selectedClassId));
   };
+  useEffect(() => {
+    if (databaseState.loading || databaseState.error) return;
+    let running = false;
+    const sync = async () => {if (running) return; running = true; try {await refreshDatabase();} finally {running = false;}};
+    void sync();
+    const timer = setInterval(() => void sync(), 20000);
+    return () => clearInterval(timer);
+  }, [databaseState.loading]);
   const filteredAssignments = useMemo(
     () => (databaseState.data?.assignments ?? assignments).filter((item) => item.title.toLowerCase().includes(query.toLowerCase())),
     [databaseState.data, query],
@@ -102,7 +124,7 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
             <Text style={styles.brand}>LocalLearn</Text>
             <Text style={styles.breadcrumb}>BYU Idaho  /  <Text style={styles.breadcrumbStrong}>{activeTab}</Text></Text>
           </View>
-          <View style={styles.headerTools}><View style={styles.roleButton}><Text style={styles.roleLabel}>{role}</Text></View><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
+          <View style={styles.headerTools}><View style={styles.roleButton}><Text style={styles.roleLabel}>{role}</Text></View><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>{connectionStatus}</Text></View></View>
         </View>
         <View style={styles.accountBar}><Text style={styles.accountName}>{session.user.displayName} · {role}</Text><Pressable accessibilityRole="button" onPress={onLogout} style={styles.accountButton}><Text style={styles.accountAction}>Sign out</Text></Pressable></View>
         <Pressable accessibilityRole="button" onPress={() => void refreshDatabase()} style={styles.refreshButton}><Text style={styles.accountAction}>↻ Refresh grades and sync work</Text></Pressable>

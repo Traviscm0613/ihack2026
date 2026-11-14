@@ -1,7 +1,10 @@
 import type { Assignment } from '../data/mockData';
 import type { CalendarEvent, SchoolClass, Quiz, ClassMaterial } from '../db/database';
 import { configureDataProtection } from './dataProtection';
+import {saveSession} from './sessionStorage';
+import {cacheValue, cachedValue, queueMutation, accountScope} from '../db/database';
 import * as FileSystem from 'expo-file-system/legacy';
+import {Platform} from 'react-native';
 
 export type ServerSnapshot = {
   assignments: Assignment[];
@@ -79,6 +82,7 @@ function normalizeServerUrl(value: string) {
 }
 
 export class LocalServerClient {
+  fromCache = false;
   readonly baseUrl: string;
   private token: string | null;
 
@@ -93,25 +97,49 @@ export class LocalServerClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const scope = accountScope();
     if (!this.baseUrl) throw new Error('No Raspberry Pi server URL is configured.');
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    let response: Response;
+    try {response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
+      signal: controller.signal,
       headers: {
         Accept: 'application/json',
         ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(init.headers ?? {}),
       },
-    });
+    });} catch(error) {
+      if (scope !== accountScope()) throw Error('Account changed during request');
+      if (!init.method || init.method === 'GET') {
+        const cached = await cachedValue<T>(path);
+        if (cached !== null) {this.fromCache = true; return cached;}
+      }
+      throw error;
+    } finally {clearTimeout(timeout);}
 
     if (!response.ok) {
       const message = await response.text().catch(() => '');
       throw new Error(message || `Local server returned ${response.status}.`);
     }
 
-    return response.status === 204 ? (undefined as T) : response.json() as Promise<T>;
+    const result = response.status === 204 ? undefined as T : await response.json() as T;
+    this.fromCache = false;
+    if (scope !== accountScope()) throw Error('Account changed during request');
+    if (!init.method || init.method === 'GET') await cacheValue(path, result);
+    return result;
   }
+
+  async mutate<T>(path: string, input: Record<string, unknown>, method = 'POST'): Promise<{queued: boolean; result?: T}> {
+    const body = {...input, id: input.id ?? `client-${Date.now()}-${Math.random().toString(36).slice(2)}`};
+    // Save first so closing the app during an upload does not lose the draft.
+    await queueMutation(path, method, body);
+    return {queued: true};
+  }
+  replay(path: string, body: Record<string, unknown>, method = 'POST') {return this.request(path, {method, body: JSON.stringify(body)});}
 
   async login(username: string, password: string) {
     const session = await this.request<Session>('/api/auth/login', {
@@ -121,6 +149,7 @@ export class LocalServerClient {
     this.token = session.token;
     activeServerToken = session.token;
     configureDataProtection(`${session.user.id}:${password}`);
+    await saveSession(session, this.baseUrl);
     return session;
   }
 
@@ -129,7 +158,18 @@ export class LocalServerClient {
     this.setToken(null);
   }
   health() { return this.request<ServerHealth>('/api/admin/health'); }
-  snapshot() { return this.request<ServerSnapshot>('/api/snapshot'); }
+  async snapshot() {
+    const snapshot = await this.request<ServerSnapshot>('/api/snapshot');
+    void this.prefetch(snapshot.assignments.flatMap(a => a.resources ?? []));
+    return snapshot;
+  }
+  async prefetch(files: {id: string; name: string}[]) {
+    const scope = accountScope();
+    for (const f of files) {
+      if(scope !== accountScope()) return;
+      try {if(Platform.OS === 'web') await this.file(f.id); else await this.downloadFile(f.id, f.name);} catch {return;}
+    }
+  }
   createQuiz(input: Record<string, unknown>) { return this.request('/api/quizzes', {method: 'POST', body: JSON.stringify(input)}); }
   createMaterial(input: Record<string, unknown>) { return this.request('/api/materials', {method: 'POST', body: JSON.stringify(input)}); }
   quizReviews(id: string) { return this.request<{id: string; studentName: string; answers: Record<string, string>; status: string; score: number | null}[]>(`/api/quizzes/${id}/attempts`); }
@@ -139,12 +179,23 @@ export class LocalServerClient {
   submit(input: Record<string, unknown>) { return this.request<{id: string}>('/api/submissions', {method: 'POST', body: JSON.stringify(input)}); }
   attach(id: string, file: Record<string, unknown>) { return this.request(`/api/submissions/${id}/files`, {method: 'POST', body: JSON.stringify(file)}); }
   async file(id: string) {
+    const scope = accountScope();
+    const saved = await cachedValue<string>(`file:${id}`);
+    if (saved) return (await fetch(saved)).blob();
     const response = await fetch(`${this.baseUrl}/api/files/${id}`, {headers: {Authorization: `Bearer ${this.token}`}});
     if (!response.ok) throw new Error(`File access failed (${response.status})`);
-    return response.blob();
+    const blob = await response.blob();
+    if (typeof FileReader !== 'undefined') {
+      const value = await new Promise<string>((resolve, reject) => {const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob);});
+      if(scope === accountScope()) await cacheValue(`file:${id}`, value);
+    }
+    return blob;
   }
   async downloadFile(id: string, name: string) {
-    const uri = `${FileSystem.cacheDirectory}${id}-${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const directory = `${FileSystem.documentDirectory}classroom-files/`;
+    await FileSystem.makeDirectoryAsync(directory, {intermediates: true});
+    const uri = `${directory}${id}-${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    if ((await FileSystem.getInfoAsync(uri)).exists) return FileSystem.getContentUriAsync(uri);
     const result = await FileSystem.downloadAsync(`${this.baseUrl}/api/files/${id}`, uri, {headers: {Authorization: `Bearer ${this.token}`}});
     if (result.status !== 200) throw new Error('File download failed');
     return FileSystem.getContentUriAsync(result.uri);
@@ -168,7 +219,11 @@ export class LocalServerClient {
   removeEnrollment(classId: string, userId: string) { return this.request<void>(`/api/classes/${classId}/members/${userId}`, { method: 'DELETE' }); }
   createAssignment(input: Record<string, unknown>) { return this.request<Assignment>('/api/assignments', { method: 'POST', body: JSON.stringify(input) }); }
   updateAssignment(id: string, input: Record<string, unknown>) { return this.request<Assignment>(`/api/assignments/${id}`, { method: 'PATCH', body: JSON.stringify(input) }); }
-  submissions(assignmentId: string) { return this.request<TeacherSubmission[]>(`/api/assignments/${assignmentId}/submissions`); }
+  async submissions(assignmentId: string) {
+    const reviews = await this.request<TeacherSubmission[]>(`/api/assignments/${assignmentId}/submissions`);
+    void this.prefetch(reviews.flatMap(r => r.files));
+    return reviews;
+  }
 
   gradeSubmission(id: string, input: { gradeValue?: number; gradeLabel?: string; feedback: string; status: 'graded' | 'returned' | 'revision_requested' }) {
     return this.request<TeacherSubmission>(`/api/submissions/${id}/grade`, { method: 'POST', body: JSON.stringify(input) });
@@ -183,6 +238,7 @@ export class LocalServerClient {
 export function getConfiguredServerUrl() {
   return activeServerUrl ?? (process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : DEFAULT_RASPBERRY_PI_URL);
 }
+export function restoreServerConnection(serverUrl: string, token: string) {activeServerUrl = serverUrl; activeServerToken = token;}
 
 export function getConfiguredServerUrls() {
   const configured = process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : undefined;

@@ -1,12 +1,13 @@
 """LocalLearn HTTP API for the Raspberry Pi (standard library only)."""
 
 import argparse
-import time
+import io
+import mimetypes
+import secrets
 import hashlib
 import json
 import shutil
 import sqlite3
-import threading
 import traceback
 import uuid
 import zipfile
@@ -55,22 +56,15 @@ class LocalLearnServer:
         settings.files_dir.mkdir(parents=True, exist_ok=True)
         (settings.data_dir / "backups").mkdir(parents=True, exist_ok=True)
         self.db = Database(settings.database_path, Path(__file__).with_name("schema.sql"))
-        self.sessions = {}
-        self.sessions_lock = threading.Lock()
 
     def user_for_token(self, token):
-        with self.sessions_lock:
-            session = self.sessions.get(token)
-        user_id = session[0] if session and session[1] > time.time() else None
-        if not user_id:
-            return None
         with self.db.connection() as db:
-            return db.execute("SELECT * FROM users WHERE id = ? AND active = 1", (user_id,)).fetchone()
+            return db.execute('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND u.active=1', (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
 
     def create_session(self, user_id):
-        token = uuid.uuid4().hex + uuid.uuid4().hex
-        with self.sessions_lock:
-            self.sessions[token] = (user_id, time.time() + 28800)
+        token = secrets.token_urlsafe(48)
+        with self.db.connection() as db:
+            db.execute('INSERT INTO sessions VALUES (?, ?, ?)', (hashlib.sha256(token.encode()).hexdigest(), user_id, timestamp()))
         return token
 
     def snapshot(self, user_id=None):
@@ -81,7 +75,7 @@ class LocalLearnServer:
             quizzes = db.execute("SELECT * FROM quizzes WHERE active = 1 ORDER BY due_at").fetchall()
             questions = db.execute("SELECT * FROM quiz_questions ORDER BY quiz_id, position").fetchall()
             materials = db.execute("SELECT * FROM class_materials ORDER BY title").fetchall()
-            completed = {r["assignment_id"] for r in db.execute("SELECT assignment_id FROM submissions WHERE student_id = ?", (user_id,)).fetchall()} if user_id else set()
+            completed = {r['assignment_id'] for r in db.execute("SELECT assignment_id FROM submissions s WHERE student_id=? AND status NOT IN ('uploading', 'revision_requested') AND EXISTS (SELECT 1 FROM submission_files f WHERE f.submission_id=s.id)", (user_id,)).fetchall()} if user_id else set()
         class_data = [{"id": r["id"], "name": r["name"], "sectionName": None, "teacher": r["teacher_name"], "location": r["room"] or "", "grade": r["term"] or "", "color": "purple", "description": r["description"]} for r in classes]
         assignment_data = [{"id": r["id"], "title": r["title"], "subject": r["subject"], "teacher": r["teacher_name"], "due": r["due_at"] or "", "dueDate": (r["due_at"] or "")[:10], "progress": 100 if r["id"] in completed else 0, "status": "completed" if r["id"] in completed else "upcoming", "completed": r["id"] in completed, "tone": "math", "classId": r["class_id"], "description": r["description"], "submissionTypes": parse_json(r["allowed_submission_types"], ["file"]), "grade": None, "feedback": None} for r in assignments]
         event_data = [{"id": r["id"], "title": r["title"], "date": r["starts_at"][:10], "time": r["starts_at"][11:16], "notes": r["description"] or "", "kind": r["event_type"], "assignmentId": r["assignment_id"]} for r in events]
@@ -97,8 +91,16 @@ class LocalLearnServer:
             if viewer['role'] == 'student':
                 visible = {r['class_id'] for r in db.execute('SELECT class_id FROM class_memberships WHERE user_id = ? AND removed_at IS NULL', (user_id,))}
             for item in assignment_data:
-                receipt = db.execute('SELECT * FROM submissions WHERE student_id = ? AND assignment_id = ? ORDER BY submitted_at DESC LIMIT 1', (user_id, item['id'])).fetchone()
+                resources = db.execute('SELECT * FROM assignment_resources WHERE assignment_id=?', (item['id'],)).fetchall()
+                item['resources'] = [{'id': Path(r['storage_key']).name, 'name': r['display_name'], 'mimeType': r['mime_type']} for r in resources]
+                source = next(r for r in assignments if r['id'] == item['id'])
+                item['dueAt'] = source['due_at']
+                item['allowLate'] = bool(source['allow_late'])
+                item['allowResubmission'] = bool(source['allow_resubmission'])
+                receipt = db.execute("SELECT * FROM submissions s WHERE student_id=? AND assignment_id=? AND EXISTS (SELECT 1 FROM submission_files f WHERE f.submission_id=s.id) ORDER BY submitted_at DESC LIMIT 1", (user_id, item['id'])).fetchone()
                 if receipt:
+                    item['submissionStatus'] = receipt['status']
+                    item['submittedAt'] = receipt['submitted_at']
                     item['grade'] = receipt['grade_value']
                     item['feedback'] = '\n'.join(r['comment'] for r in db.execute('SELECT comment FROM assignment_feedback WHERE submission_id = ? ORDER BY created_at', (receipt['id'],)))
         return {"assignments": [a for a in assignment_data if a['classId'] in visible], "classes": [c for c in class_data if c['id'] in visible], "events": [e for e, r in zip(event_data, events) if r['class_id'] is None or r['class_id'] in visible], "quizzes": [q for q in quiz_data if q['classId'] in visible], "quizAttempts": attempts, "materials": [m for m in material_data if m['classId'] in visible], "serverTime": timestamp()}
@@ -125,6 +127,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Max-Age", "86400")
 
     def send_json(self, payload, status=HTTPStatus.OK):
+        self.record_receipt(payload, status)
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -134,12 +137,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def empty(self):
+        self.record_receipt(None, 204)
         self.send_response(HTTPStatus.NO_CONTENT)
         self.cors_headers()
         self.end_headers()
 
     def error(self, status, message):
         self.send_json({"error": message}, status)
+
+    def record_receipt(self, payload, status):
+        receipt = getattr(self, 'mutation_receipt', None)
+        if receipt and 200 <= status < 300:
+            with self.service.db.connection() as db:
+                db.execute('INSERT OR IGNORE INTO mutation_receipts VALUES (?, ?, ?, ?)', (*receipt, json.dumps({'status': int(status), 'payload': payload})))
 
     def auth_token(self):
         return self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -170,6 +180,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if not path.startswith('/api/'):
+            root = self.service.settings.web_dir.resolve()
+            target = (root / unquote(path).lstrip('/')).resolve()
+            try: target.relative_to(root)
+            except ValueError: self.error(403, 'Invalid path'); return
+            if target.is_dir(): target = target / 'index.html'
+            if not target.is_file() and not target.suffix: target = root / 'index.html'
+            if not target.is_file(): self.error(404, 'Web build not installed. Run npm run build:web:offline.'); return
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Type', mimetypes.guess_type(str(target))[0] or 'application/octet-stream')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+            self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers(); self.wfile.write(body); return
         if path == "/api/admin/health":
             total, used, free = shutil.disk_usage(self.service.settings.data_dir)
             self.send_json({"status": "ok", "version": "1.1", "database": "sqlite", "storage": {"usedBytes": used, "freeBytes": free, "totalBytes": total}, "checkedAt": timestamp()}); return
@@ -234,11 +260,14 @@ class Handler(BaseHTTPRequestHandler):
             if not user or not user["active"] or not verify_password(str(data.get("password", "")), user["password_hash"]): self.error(HTTPStatus.UNAUTHORIZED, "Invalid username or password"); return
             self.send_json({"token": self.service.create_session(user["id"]), "user": public_user(user)}); return
         if path == "/api/auth/logout":
-            if self.require(): self.service.sessions.pop(self.auth_token(), None); self.empty()
+            if self.require():
+                with self.service.db.connection() as db: db.execute('DELETE FROM sessions WHERE token_hash=?', (hashlib.sha256(self.auth_token().encode()).hexdigest(),))
+                self.empty()
             return
         if path == "/api/admin/users": self.create_user(data); return
         if path == "/api/classes": self.create_class(data); return
         if path == "/api/assignments": self.create_assignment(data); return
+        if path.startswith('/api/assignments/') and path.endswith('/resources'): self.attach_resource(path.split('/')[3], data); return
         if path == "/api/calendar/events": self.create_event(data); return
         if path == "/api/submissions": self.create_submission(data); return
         if path == '/api/quizzes': self.create_quiz(data); return
@@ -266,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
     def create_material(self, data):
         user = self.require({'teacher', 'administrator'})
         if not user or not self.can_manage(user, data.get('classId')): return
-        material_id, created = uid(), timestamp()
+        material_id, created = data.get('id', uid()), timestamp()
         with self.service.db.connection() as db:
             db.execute('INSERT INTO class_materials VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?)', (material_id, data['classId'], data['title'], data.get('type', 'resource'), data.get('content', ''), created, created))
         self.send_json({'id': material_id}, 201)
@@ -274,11 +303,13 @@ class Handler(BaseHTTPRequestHandler):
     def create_quiz(self, data):
         user = self.require({'teacher', 'administrator'})
         if not user or not self.can_manage(user, data.get('classId')): return
-        quiz_id, created = uid(), timestamp()
+        quiz_id, created = data.get('id', uid()), timestamp()
         with self.service.db.connection() as db:
-            db.execute('INSERT INTO quizzes VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', (quiz_id, data['classId'], user['id'], data['title'], data.get('description', ''), data.get('dueDate'), created, created))
+            db.execute('INSERT INTO quizzes VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', (quiz_id, data['classId'], user['id'], data['title'], data.get('description', ''), data.get('dueAt', data.get('dueDate')), created, created))
             for position, q in enumerate(data.get('questions', [])):
                 if q['type'] not in ('multiple_choice', 'short_answer'): raise ValueError('Invalid question type')
+                if not str(q.get('prompt', '')).strip() or not isinstance(q.get('points', 1), (int, float)) or q.get('points', 1) <= 0: raise ValueError('A question and positive points are required')
+                if q['type'] == 'multiple_choice' and (len(q.get('options', [])) < 2 or q.get('correctAnswer') not in q.get('options', [])): raise ValueError('Multiple-choice questions need options and a correct answer')
                 db.execute('INSERT INTO quiz_questions VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (uid(), quiz_id, position, q['prompt'], q['type'], json.dumps(q.get('options', [])), q.get('correctAnswer'), q.get('points', 1)))
         self.send_json({'id': quiz_id}, 201)
 
@@ -324,12 +355,36 @@ class Handler(BaseHTTPRequestHandler):
         if not user: return
         if not data.get("classId") or not data.get("title"): self.error(HTTPStatus.BAD_REQUEST, "classId and title are required"); return
         if not self.can_manage(user, data['classId']): return
+        if not str(data['title']).strip(): raise ValueError('Assignment title is required')
+        if not data.get('submissionTypes', ['file']): raise ValueError('Choose at least one submission type')
         assignment_id, created = data.get("id", uid()), timestamp(); due = data.get("dueAt", data.get("due", data.get("dueDate")))
         if due and len(str(due)) == 10: due = str(due) + "T23:59:59Z"
+        if due:
+            parsed = datetime.fromisoformat(str(due).replace('Z', '+00:00'))
+            if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
+            due = parsed.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         with self.service.db.connection() as db:
             if not db.execute("SELECT id FROM classes WHERE id = ?", (data["classId"],)).fetchone(): self.error(HTTPStatus.NOT_FOUND, "Class not found"); return
             db.execute("INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", (assignment_id, data["classId"], user["id"], data["title"], data.get("description", ""), due, json.dumps(data.get("submissionTypes", data.get("allowedSubmissionTypes", ["file"]))), as_bool(data.get("allowLate")), as_bool(data.get("allowResubmission"), False), created, created))
         self.send_json(next(a for a in self.service.snapshot(user["id"])["assignments"] if a["id"] == assignment_id), HTTPStatus.CREATED)
+
+    def attach_resource(self, assignment_id, data):
+        user = self.require({'teacher', 'administrator'})
+        if not user: return
+        with self.service.db.connection() as db:
+            assignment = db.execute('SELECT class_id FROM assignments WHERE id=?', (assignment_id,)).fetchone()
+            if not assignment: self.error(404, 'Assignment not found'); return
+            if not self.can_manage(user, assignment['class_id']): return
+            upload = db.execute('SELECT * FROM uploads WHERE id=? AND owner_id=?', (data.get('id'), user['id'])).fetchone()
+            if not upload: self.error(403, 'Upload access denied'); return
+            resource_id = data.get('resourceId', upload['id'])
+            existing = db.execute('SELECT assignment_id FROM assignment_resources WHERE id=?', (resource_id,)).fetchone()
+            if existing:
+                if existing['assignment_id'] != assignment_id: self.error(409, 'Resource ID already in use'); return
+            else:
+                path = self.service.settings.files_dir / upload['id']
+                db.execute('INSERT INTO assignment_resources VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (resource_id, assignment_id, upload['name'], 'files/' + upload['id'], upload['mime'], path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest(), timestamp()))
+        self.send_json({'id': resource_id}, 201)
 
     def create_event(self, data):
         user = self.require({"teacher", "administrator"})
@@ -338,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.can_manage(user, data['classId']): return
         elif user['role'] != 'administrator': self.error(403, 'Only administrators create school-wide events'); return
         event_id, created = data.get("id", uid()), timestamp(); starts = data.get("startsAt") or (str(data.get("date", created[:10])) + "T" + str(data.get("time", "00:00")) + ":00Z")
-        with self.service.db.connection() as db: db.execute("INSERT INTO calendar_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (event_id, data.get("classId"), user["id"], data.get("title", "Event"), data.get("description", data.get("notes", "")), data.get("eventType", data.get("kind", "school")), starts, data.get("endsAt"), data.get("assignmentId"), created))
+        with self.service.db.connection() as db: db.execute("INSERT INTO calendar_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event_id, data.get("classId"), user["id"], data.get("title", "Event"), data.get("description", data.get("notes", "")), data.get("eventType", data.get("kind", "school")), starts, data.get("endsAt"), data.get("assignmentId"), created))
         self.send_json({"id": event_id, "title": data.get("title", "Event"), "date": starts[:10], "time": starts[11:16], "notes": data.get("description", data.get("notes", "")), "kind": data.get("eventType", data.get("kind", "school")), "assignmentId": data.get("assignmentId")}, HTTPStatus.CREATED)
 
     def create_submission(self, data):
@@ -348,17 +403,19 @@ class Handler(BaseHTTPRequestHandler):
         with self.service.db.connection() as db:
             assignment = db.execute('SELECT * FROM assignments WHERE id=? AND active=1', (data.get('assignmentId'),)).fetchone()
             if not assignment: self.error(404, 'Assignment not found'); return
+            if data.get('kind', 'file') not in json.loads(assignment['allowed_submission_types']): self.error(400, 'Submission type is not allowed'); return
             if not db.execute('SELECT user_id FROM class_memberships WHERE class_id=? AND user_id=? AND removed_at IS NULL', (assignment['class_id'], user['id'])).fetchone(): self.error(403, 'Enrollment required'); return
             existing = db.execute('SELECT * FROM submissions WHERE id=?', (data.get('id'),)).fetchone()
             if existing:
                 if existing['student_id'] != user['id']: self.error(403, 'Submission access denied'); return
                 self.send_json({'id': existing['id']}); return
-            if not assignment['allow_resubmission'] and db.execute('SELECT id FROM submissions WHERE assignment_id=? AND student_id=?', (assignment['id'], user['id'])).fetchone(): self.error(409, 'Resubmission is disabled'); return
+            previous = db.execute('SELECT status FROM submissions WHERE assignment_id=? AND student_id=? ORDER BY submitted_at DESC LIMIT 1', (assignment['id'], user['id'])).fetchone()
+            if not assignment['allow_resubmission'] and previous and previous['status'] != 'revision_requested': self.error(409, 'Resubmission is disabled'); return
             if not assignment['allow_late'] and assignment['due_at'] and assignment['due_at'] < timestamp(): self.error(409, 'Assignment is past due'); return
         submission_id, created, student_id = data.get("id", uid()), timestamp(), data.get("studentId", user["id"])
         with self.service.db.connection() as db:
             attempt = db.execute("SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n FROM submissions WHERE assignment_id = ? AND student_id = ?", (data.get("assignmentId"), student_id)).fetchone()["n"]
-            db.execute("INSERT INTO submissions (id, assignment_id, student_id, attempt_number, submitted_at, status, grade_value, grade_label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'submitted', NULL, NULL, ?, ?)", (submission_id, data.get("assignmentId"), student_id, attempt, created, created, created))
+            db.execute("INSERT INTO submissions (id, assignment_id, student_id, attempt_number, submitted_at, status, grade_value, grade_label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'uploading', NULL, NULL, ?, ?)", (submission_id, data.get("assignmentId"), student_id, attempt, created, created, created))
         self.send_json({"id": submission_id, "assignmentId": data.get("assignmentId"), "studentId": student_id, "submittedAt": created, "status": "submitted", "files": [], "feedback": [], "gradeValue": None, "gradeLabel": None}, HTTPStatus.CREATED)
 
     def attach_submission_file(self, submission_id, data):
@@ -383,6 +440,7 @@ class Handler(BaseHTTPRequestHandler):
             if not db.execute("SELECT id FROM submissions WHERE id = ?", (submission_id,)).fetchone(): self.error(HTTPStatus.NOT_FOUND, "Submission not found"); return
             file_id = data.get("id", uid())
             db.execute("INSERT INTO submission_files VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (file_id, submission_id, storage_key, Path(data.get("originalName", "upload.bin")).name, data.get("mimeType", "application/octet-stream"), int(data.get("sizeBytes", target.stat().st_size)), data.get("checksumSha256", hashlib.sha256(target.read_bytes()).hexdigest()), timestamp()))
+            db.execute("UPDATE submissions SET status='submitted', updated_at=? WHERE id=? AND status='uploading'", (timestamp(), submission_id))
         self.send_json({"id": file_id, "submissionId": submission_id, "storageKey": storage_key}, HTTPStatus.CREATED)
 
     def grade(self, submission_id, data):
@@ -441,13 +499,16 @@ class Handler(BaseHTTPRequestHandler):
         message = BytesParser(policy=policy.default).parsebytes((f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n").encode() + raw)
         item = next((part for part in message.iter_parts() if part.get_param("name", header="content-disposition") == "file"), None)
         if item is None: self.error(HTTPStatus.BAD_REQUEST, "A file field is required"); return
-        file_id = uid(); target = self.service.settings.files_dir / file_id; digest, size = hashlib.sha256(), 0
+        upload_key = next((part.get_content().strip() for part in message.iter_parts() if part.get_param('name', header='content-disposition') == 'uploadId'), '')
+        file_id = hashlib.sha256((user['id'] + ':' + upload_key).encode()).hexdigest() if upload_key else uid()
+        target = self.service.settings.files_dir / file_id; digest, size = hashlib.sha256(), 0
         content = item.get_payload(decode=True) or b""
+        if target.exists() and hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(content).digest(): self.error(409, 'Upload ID reused with different file contents'); return
         with target.open("wb") as output:
             output.write(content)
         size = len(content); digest.update(content)
         with self.service.db.connection() as db:
-            db.execute('INSERT INTO uploads VALUES (?, ?, ?, ?)', (file_id, user['id'], Path(item.get_filename() or 'upload.bin').name, item.get_content_type()))
+            db.execute('INSERT OR IGNORE INTO uploads VALUES (?, ?, ?, ?)', (file_id, user['id'], Path(item.get_filename() or 'upload.bin').name, item.get_content_type()))
         self.send_json({"id": file_id, "storageKey": str(target.relative_to(self.service.settings.data_dir)), "originalName": Path(item.get_filename() or "upload.bin").name, "mimeType": item.get_content_type() or "application/octet-stream", "sizeBytes": size, "checksumSha256": digest.hexdigest()}, HTTPStatus.CREATED)
 
     def download_file(self, file_id):
@@ -457,6 +518,9 @@ class Handler(BaseHTTPRequestHandler):
             upload = db.execute('SELECT * FROM uploads WHERE id=?', (file_id,)).fetchone()
             allowed = upload and upload['owner_id'] == user['id']
             teacher = db.execute('SELECT c.teacher_id FROM submission_files f JOIN submissions s ON s.id=f.submission_id JOIN assignments a ON a.id=s.assignment_id JOIN classes c ON c.id=a.class_id WHERE f.id=?', (file_id,)).fetchone()
+            resource = db.execute("SELECT a.class_id, c.teacher_id FROM assignment_resources r JOIN assignments a ON a.id=r.assignment_id JOIN classes c ON c.id=a.class_id WHERE r.storage_key=?", ('files/' + file_id,)).fetchone()
+            if resource:
+                allowed = allowed or resource['teacher_id'] == user['id'] or bool(db.execute('SELECT user_id FROM class_memberships WHERE class_id=? AND user_id=? AND removed_at IS NULL', (resource['class_id'], user['id'])).fetchone())
             if not allowed and user['role'] != 'administrator' and not (teacher and teacher['teacher_id'] == user['id']): self.error(403, 'File access denied'); return
         if not file_id or Path(file_id).name != file_id:
             self.error(HTTPStatus.BAD_REQUEST, "Invalid file id"); return
@@ -480,7 +544,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.service.db.connection() as db: db.backup(source)
             source.close(); output.write(temp, "locallearn.sqlite3"); temp.unlink(missing_ok=True)
             for file in self.service.settings.files_dir.rglob("*"):
-                if file.is_file(): output.write(file, str(file.relative_to(self.service.settings.data_dir)))
+                if file.is_file(): output.write(file, file.relative_to(self.service.settings.data_dir).as_posix())
         size = archive.stat().st_size
         with self.service.db.connection() as db: db.execute("INSERT INTO backup_runs VALUES (?, ?, ?, 'complete', ?, ?)", (backup_id, str(archive), size, created, timestamp()))
         self.send_json({"id": backup_id, "createdAt": created, "status": "complete", "sizeBytes": size}, HTTPStatus.CREATED)
@@ -491,9 +555,21 @@ class Handler(BaseHTTPRequestHandler):
         if not row or not Path(row["archive_path"]).is_file(): self.error(HTTPStatus.NOT_FOUND, "Backup not found"); return
         with zipfile.ZipFile(row["archive_path"]) as archive:
             if any(Path(name).is_absolute() or ".." in Path(name).parts for name in archive.namelist()): self.error(HTTPStatus.BAD_REQUEST, "Unsafe backup archive"); return
+            if archive.testzip() is not None: raise ValueError('Backup checksum validation failed')
+            with self.service.db.connection() as db: current_sessions = [dict(row) for row in db.execute('SELECT * FROM sessions')]
             extracted = self.service.settings.data_dir / (backup_id + ".restore.sqlite3"); extracted.write_bytes(archive.read("locallearn.sqlite3")); source = sqlite3.connect(extracted)
-            with self.service.db.connection() as db: source.backup(db)
+            if source.execute('PRAGMA integrity_check').fetchone()[0] != 'ok': source.close(); extracted.unlink(); raise ValueError('Backup database is damaged')
+            with self.service.db.connection() as db:
+                source.backup(db)
+                db.execute('DELETE FROM sessions')
+                for saved in current_sessions:
+                    if db.execute('SELECT id FROM users WHERE id=?', (saved['user_id'],)).fetchone(): db.execute('INSERT INTO sessions VALUES (?, ?, ?)', (saved['token_hash'], saved['user_id'], saved['created_at']))
             source.close(); extracted.unlink(missing_ok=True)
+            for name in archive.namelist():
+                if name.startswith('files/') and not name.endswith('/'):
+                    target = self.service.settings.data_dir / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(name))
         self.send_json({"id": backup_id, "status": "restored"})
 
     def do_PATCH(self):
@@ -551,6 +627,7 @@ def secured(method):
         path = urlparse(self.path).path.rstrip('/')
         if path == '/api/admin/health':
             self.send_json({'status': 'ok', 'database': 'sqlite'}); return
+        if self.command == 'GET' and not path.startswith('/api/'): return method(self)
         if path == '/api/auth/login' and self.command == 'POST':
             return method(self)
         user = self.require()
@@ -576,6 +653,21 @@ def secured(method):
                     enrolled = db.execute('SELECT user_id FROM class_memberships WHERE class_id=? AND user_id=? AND removed_at IS NULL', (class_id, user['id'])).fetchone()
                     if not owned and not (user['role'] == 'student' and enrolled and parts[2] == 'submissions'):
                         self.error(403, 'Class access denied'); return
+            if self.command in ('POST', 'PATCH', 'DELETE') and self.headers.get('Content-Type', '').startswith('application/json'):
+                length = int(self.headers.get('Content-Length', '0'))
+                if length < 0 or length > self.service.settings.max_upload_bytes: raise ValueError('Invalid request size')
+                raw = self.rfile.read(length)
+                self.rfile = io.BytesIO(raw)
+                payload = json.loads(raw or '{}')
+                operation_id = payload.get('id')
+                if operation_id:
+                    digest = hashlib.sha256((self.command + path + json.dumps(payload, sort_keys=True)).encode()).hexdigest()
+                    with self.service.db.connection() as db:
+                        row = db.execute('SELECT * FROM mutation_receipts WHERE user_id=? AND operation_id=?', (user['id'], operation_id)).fetchone()
+                    if row:
+                        if row['payload_hash'] != digest: self.error(409, 'Operation ID reused with different data'); return
+                        receipt = json.loads(row['response']); self.send_json(receipt['payload'], receipt['status']); return
+                    self.mutation_receipt = (user['id'], operation_id, digest)
             return method(self)
         except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
             self.error(400, str(exc))

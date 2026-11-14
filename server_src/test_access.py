@@ -50,6 +50,22 @@ class AccessTest(unittest.TestCase):
                 self.assertEqual(call(members_path + '/peer', token=tokens['teacher'], verb='DELETE')[0], 204)
                 status, assignment = call('/api/assignments', {'classId': school['id'], 'title': 'Homework'}, tokens['teacher'])
                 self.assertEqual(status, 201, assignment)
+                draft = {'id': 'offline-assignment', 'classId': school['id'], 'title': 'Offline worksheet', 'description': 'Show your work', 'dueAt': '2027-01-20T18:30:00Z', 'submissionTypes': ['file'], 'allowLate': False, 'allowResubmission': True}
+                self.assertEqual(call('/api/assignments', draft, tokens['teacher'])[0], 201)
+                self.assertEqual(call('/api/assignments', draft, tokens['teacher'])[0], 201)
+                self.assertEqual(call('/api/assignments', {**draft, 'title': 'Conflicting retry'}, tokens['teacher'])[0], 409)
+                body = b'--resource\r\nContent-Disposition: form-data; name="file"; filename="worksheet.txt"\r\nContent-Type: text/plain\r\n\r\nWorksheet instructions\r\n--resource--\r\n'
+                status, resource = call('/api/files/upload', token=tokens['teacher'], raw=body, content='multipart/form-data; boundary=resource')
+                self.assertEqual(status, 201)
+                self.assertEqual(call('/api/assignments/offline-assignment/resources', {**resource, 'resourceId': 'worksheet'}, tokens['teacher'])[0], 201)
+                self.assertEqual(call('/api/files/' + resource['id'], token=tokens['student']), (200, b'Worksheet instructions'))
+                self.assertEqual(call('/api/files/' + resource['id'], token=tokens['peer'])[0], 403)
+                record = next(a for a in call('/api/snapshot', token=tokens['student'])[1]['assignments'] if a['id'] == 'offline-assignment')
+                self.assertEqual(record['description'], 'Show your work'); self.assertEqual(record['dueAt'], '2027-01-20T18:30:00.000Z')
+                self.assertEqual(record['resources'][0]['id'], resource['id'])
+                # Tokens remain valid across a server restart; logout still revokes them.
+                server.service = LocalLearnServer(Settings(data_dir=Path(folder)))
+                self.assertEqual(call('/api/snapshot', token=tokens['student'])[0], 200)
                 self.assertEqual(call('/api/snapshot', token=tokens['peer'])[1]['assignments'], [])
                 status, submission = call('/api/submissions', {'assignmentId': assignment['id'], 'studentId': 'peer'}, tokens['student'])
                 self.assertEqual(status, 201, submission)
@@ -66,7 +82,7 @@ class AccessTest(unittest.TestCase):
                 self.assertEqual(call(path, grade, tokens['student'])[0], 403)
                 self.assertEqual(call(path, grade, tokens['other'])[0], 403)
                 self.assertEqual(call(path, grade, tokens['teacher'])[0], 200)
-                receipt = call('/api/snapshot', token=tokens['student'])[1]['assignments'][0]
+                receipt = next(a for a in call('/api/snapshot', token=tokens['student'])[1]['assignments'] if a['id'] == assignment['id'])
                 self.assertEqual(receipt['grade'], 92); self.assertEqual(receipt['feedback'], 'Well done')
                 quiz = call('/api/quizzes', {'classId': school['id'], 'title': 'Quiz', 'questions': [{'prompt': '2+2?', 'type': 'multiple_choice', 'options': ['4', '5'], 'correctAnswer': '4', 'points': 1}]}, tokens['teacher'])[1]
                 q = call('/api/snapshot', token=tokens['student'])[1]['quizzes'][0]['questions'][0]
@@ -76,6 +92,14 @@ class AccessTest(unittest.TestCase):
                 self.assertEqual(status, 201, result); self.assertEqual(result['score'], 1)
                 self.assertEqual(call('/api/quiz-attempts', attempt, tokens['peer'])[0], 403)
                 self.assertEqual(call('/api/quiz-attempts', attempt, tokens['student'])[1]['id'], result['id'])
+                status, event = call('/api/calendar/events', {'classId': school['id'], 'title': 'Class gathering', 'startsAt': '2027-01-12T12:00:00Z', 'eventType': 'class'}, tokens['teacher'])
+                self.assertEqual(status, 201, event)
+                status, backup = call('/api/admin/backups', {}, tokens['admin'])
+                self.assertEqual(status, 201, backup)
+                file_path = Path(folder) / 'files' / resource['id']
+                file_path.write_text('damaged content', encoding='utf8')
+                self.assertEqual(call('/api/admin/backups/' + backup['id'] + '/restore', {}, tokens['admin'])[0], 200)
+                self.assertEqual(call('/api/files/' + resource['id'], token=tokens['student']), (200, b'Worksheet instructions'))
                 call('/api/auth/logout', {}, tokens['student'])
                 self.assertEqual(call('/api/snapshot', token=tokens['student'])[0], 401)
             finally:

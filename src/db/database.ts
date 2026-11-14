@@ -21,6 +21,7 @@ export type PendingOutboxChange = { id: string; type: string; payload: Record<st
 let database: SQLiteDatabase | null = null;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 let databaseName = 'locallearn.db';
+export function accountScope() {return databaseName;}
 export async function selectUserDatabase(userId: string) {
   if (database) await database.closeAsync();
   database = null;
@@ -155,6 +156,7 @@ export async function initializeDatabase() {
   await ensureEventColumns(db);
   await ensureQuizAttemptColumns(db);
   await ensureOutboxColumns(db);
+  await db.execAsync('PRAGMA user_version = 2');
 
   // Authenticated accounts start with the authoritative server snapshot.
   await syncAssignmentEvents(db);
@@ -209,6 +211,8 @@ async function ensureQuizAttemptColumns(db: SQLiteDatabase) {
 }
 
 async function ensureAssignmentColumns(db: SQLiteDatabase) {
+  const metadataColumns = await db.getAllAsync<{name: string}>('PRAGMA table_info(assignments)');
+  if (!metadataColumns.some(c => c.name === 'metadata')) await db.execAsync("ALTER TABLE assignments ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
   const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(assignments)');
   const existing = new Set(columns.map((column) => column.name));
   if (!existing.has('completed')) await db.execAsync('ALTER TABLE assignments ADD COLUMN completed INTEGER NOT NULL DEFAULT 0');
@@ -226,7 +230,7 @@ async function ensureAssignmentColumns(db: SQLiteDatabase) {
   for (const [name, definition] of additions) {
     if (!existing.has(name)) await db.execAsync(`ALTER TABLE assignments ADD COLUMN ${name} ${definition}`);
   }
-  const legacyRows = await db.getAllAsync<{ id: string; grade: number | null; feedback: string | null; protectedGrade: string | null; protectedFeedback: string | null }>('SELECT id, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback FROM assignments');
+  const legacyRows = await db.getAllAsync<{ id: string; grade: number | null; feedback: string | null; protectedGrade: string | null; protectedFeedback: string | null }>('SELECT id, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback, metadata FROM assignments');
   for (const row of legacyRows) {
     if (row.grade !== null && !row.protectedGrade) {
       await db.runAsync('UPDATE assignments SET protected_grade = ?, grade = NULL WHERE id = ?', protectJson({ value: row.grade }), row.id);
@@ -277,25 +281,32 @@ async function seedDatabase(db: SQLiteDatabase) {
 
 export async function getDashboardData(): Promise<DashboardData> {
   const db = await getDatabase();
-  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback FROM assignments ORDER BY COALESCE(due_date, due)');
+  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback, metadata FROM assignments ORDER BY COALESCE(due_date, due)');
   const classRows = await db.getAllAsync<SchoolClass>('SELECT id, name, section_name AS sectionName, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes ORDER BY name');
   const eventRows = await db.getAllAsync<CalendarEventRow>('SELECT id, title, event_date AS date, event_time AS time, notes, kind, assignment_id AS assignmentId, local_only AS localOnlyValue FROM events ORDER BY event_date, event_time');
   const events = eventRows.map(mapCalendarEvent);
   const quizRows = await db.getAllAsync<Omit<Quiz, 'questions'>>('SELECT id, class_id AS classId, title, description, due_date AS dueDate FROM quizzes ORDER BY due_date');
   const quizzes = await Promise.all(quizRows.map(async (quiz) => ({ ...quiz, questions: await getQuizQuestions(quiz.id) })));
   const completedQuizRows = await db.getAllAsync<{ quizId: string }>('SELECT quiz_id AS quizId FROM quiz_attempts');
+  const snapshot = await cachedValue<{quizAttempts?: {quizId: string}[]}>('/api/snapshot');
+  for (const attempt of snapshot?.quizAttempts ?? []) if (!completedQuizRows.some(q => q.quizId === attempt.quizId)) completedQuizRows.push({quizId: attempt.quizId});
   return { assignments: assignmentRows.map(mapAssignment), classes: classRows, event: events[0] ?? null, events, quizzes, completedQuizIds: completedQuizRows.map((row) => row.quizId) };
 }
 
 export async function applyServerSnapshot(snapshot: { assignments: Assignment[]; classes: SchoolClass[]; events: CalendarEvent[]; quizzes?: Quiz[]; materials?: ClassMaterial[] }) {
+  for (const item of snapshot.assignments) {
+    if (item.dueAt) {const date = new Date(item.dueAt); item.dueDate = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;}
+  }
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     for (const item of snapshot.classes) await db.runAsync('INSERT OR REPLACE INTO classes (id, name, section_name, teacher, location, grade, color, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.name, item.sectionName ?? null, item.teacher, item.location, item.grade, item.color, item.description);
     for (const item of snapshot.assignments) await db.runAsync('INSERT OR REPLACE INTO assignments (id, title, subject, teacher, due, progress, status, completed, tone, class_id, description, due_date, submission_types, grade, feedback, protected_grade, protected_feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', item.id, item.title, item.subject, item.teacher, item.due, item.completed ? 100 : 0, item.completed ? 'Completed' : 'In progress', item.completed ? 1 : 0, item.tone, item.classId, item.description, item.dueDate, JSON.stringify(item.submissionTypes), null, null, item.grade === null ? null : protectJson({ value: item.grade }), item.feedback === null ? null : protectJson({ value: item.feedback }));
+    for (const item of snapshot.assignments) await db.runAsync('UPDATE assignments SET metadata=? WHERE id=?', JSON.stringify({resources: item.resources ?? [], dueAt: item.dueAt, allowResubmission: item.allowResubmission, allowLate: item.allowLate, submissionStatus: item.submissionStatus, submittedAt: item.submittedAt}), item.id);
     await syncAssignmentEvents(db);
     for (const item of snapshot.events) await db.runAsync('INSERT OR REPLACE INTO events (id, title, event_date, event_time, notes, kind, assignment_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?, 0)', item.id, item.title, item.date, item.time ?? null, item.notes ?? '', item.kind, item.assignmentId ?? null);
     await db.runAsync('INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)', 'last_sync', new Date().toISOString());
     for (const q of snapshot.quizzes ?? []) {
+      await db.runAsync('DELETE FROM quiz_questions WHERE quiz_id=?', q.id);
       await db.runAsync('INSERT OR REPLACE INTO quizzes VALUES (?, ?, ?, ?, ?, ?)', q.id, q.classId, q.title, q.description, q.dueDate, new Date().toISOString());
       for (const item of q.questions) await db.runAsync('INSERT OR REPLACE INTO quiz_questions VALUES (?, ?, ?, ?, ?, ?, ?)', item.id, q.id, item.prompt, item.type, JSON.stringify(item.options), null, item.points);
     }
@@ -303,7 +314,7 @@ export async function applyServerSnapshot(snapshot: { assignments: Assignment[];
   });
 }
 
-type AssignmentRow = Omit<Assignment, 'submissionTypes' | 'completed'> & { submissionTypesJson: string; classId: string | null; completedValue: number; protectedGrade: string | null; protectedFeedback: string | null };
+type AssignmentRow = Omit<Assignment, 'submissionTypes' | 'completed'> & { metadata?: string; submissionTypesJson: string; classId: string | null; completedValue: number; protectedGrade: string | null; protectedFeedback: string | null };
 type CalendarEventRow = Omit<CalendarEvent, 'localOnly'> & { localOnlyValue: number };
 
 function mapCalendarEvent(row: CalendarEventRow): CalendarEvent {
@@ -315,7 +326,7 @@ function mapAssignment(row: AssignmentRow): Assignment {
   let feedback = row.feedback;
   try { if (row.protectedGrade) grade = unprotectJson<{ value: number }>(row.protectedGrade).value; } catch (_) { grade = null; }
   try { if (row.protectedFeedback) feedback = unprotectJson<{ value: string }>(row.protectedFeedback).value; } catch (_) { feedback = null; }
-  return { ...row, completed: row.completedValue === 1, classId: row.classId ?? '', submissionTypes: JSON.parse(row.submissionTypesJson || '["file"]') as SubmissionType[], grade, feedback };
+  return { ...row, ...JSON.parse(row.metadata || '{}'), completed: row.completedValue === 1, classId: row.classId ?? '', submissionTypes: JSON.parse(row.submissionTypesJson || '["file"]') as SubmissionType[], grade, feedback };
 }
 
 export async function createAssignment(input: Omit<Assignment, 'id' | 'due'> & { id?: string; due?: string }) {
@@ -335,11 +346,15 @@ export async function createClass(input: Omit<SchoolClass, 'id'> & { id?: string
 export async function getClassDetail(classId: string) {
   const db = await getDatabase();
   const classRow = await db.getFirstAsync<SchoolClass>('SELECT id, name, section_name AS sectionName, teacher, location, grade, color, COALESCE(description, \'\') AS description FROM classes WHERE id = ?', classId);
-  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback FROM assignments WHERE class_id = ? ORDER BY COALESCE(due_date, due)', classId);
+  const assignmentRows = await db.getAllAsync<AssignmentRow>('SELECT id, title, subject, teacher, due, completed AS completedValue, tone, class_id AS classId, COALESCE(description, \'\') AS description, COALESCE(due_date, due) AS dueDate, COALESCE(submission_types, \'["file"]\') AS submissionTypesJson, grade, feedback, protected_grade AS protectedGrade, protected_feedback AS protectedFeedback, metadata FROM assignments WHERE class_id = ? ORDER BY COALESCE(due_date, due)', classId);
   const materials = await db.getAllAsync<ClassMaterial>('SELECT id, class_id AS classId, title, type, uri, COALESCE(content, \'\') AS content FROM class_materials WHERE class_id = ? ORDER BY title', classId);
   const quizRows = await db.getAllAsync<Omit<Quiz, 'questions'>>('SELECT id, class_id AS classId, title, description, due_date AS dueDate FROM quizzes WHERE class_id = ? ORDER BY due_date', classId);
   const quizzes = await Promise.all(quizRows.map(async (quiz) => ({ ...quiz, questions: await getQuizQuestions(quiz.id) })));
   return { classRow: classRow ?? null, assignments: assignmentRows.map(mapAssignment), materials, quizzes };
+}
+
+export async function saveMaterialLocally(material: ClassMaterial) {
+  await (await getDatabase()).runAsync('INSERT OR REPLACE INTO class_materials (id, class_id, title, type, uri, content) VALUES (?, ?, ?, ?, ?, ?)', material.id, material.classId, material.title, material.type, material.uri, material.content);
 }
 
 async function getQuizQuestions(quizId: string) {
@@ -379,14 +394,16 @@ function bytesToHex(bytes: Uint8Array) {
 const quizStorageKey = nacl.hash(new TextEncoder().encode('LocalLearn quiz attempt key')).slice(0, nacl.secretbox.keyLength);
 
 export async function getQuizAttempt(quizId: string) {
+  const snapshot = await cachedValue<{quizAttempts?: QuizAttempt[]}>('/api/snapshot');
+  const authoritative = snapshot?.quizAttempts?.find(q => q.quizId === quizId);
+  if(authoritative) return authoritative;
   return (await (await getDatabase()).getFirstAsync<QuizAttempt>('SELECT id, quiz_id AS quizId, score, status, created_at AS submittedAt FROM quiz_attempts WHERE quiz_id = ? ORDER BY rowid LIMIT 1', quizId)) ?? null;
 }
 
 export async function submitQuizAttempt(quiz: Quiz, answers: Record<string, string>) {
-  const serverAttempt = await new LocalServerClient().attemptQuiz(quiz.id, answers);
   const existing = await getQuizAttempt(quiz.id);
   if (existing) return { ...existing, alreadySubmitted: true as const };
-  const score = serverAttempt.score ?? 0;
+  const score = 0;
   const hasShortAnswer = quiz.questions.some((question) => question.type === 'short_answer');
   const id = `attempt-${Date.now()}`;
   const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
@@ -396,8 +413,11 @@ export async function submitQuizAttempt(quiz: Quiz, answers: Record<string, stri
   const integrityHash = bytesToHex(nacl.hash(new TextEncoder().encode(`${id}:${quiz.id}:${nonceValue}:${encrypted}`)));
   const submittedAt = new Date().toISOString();
   const db = await getDatabase();
-  await db.runAsync('INSERT INTO quiz_attempts (id, quiz_id, answers, encrypted_answers, nonce, integrity_hash, score, graded, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, quiz.id, 'ENCRYPTED', encrypted, nonceValue, integrityHash, hasShortAnswer ? null : score, 0, 'awaiting_feedback', submittedAt);
-  return { id, quizId: quiz.id, score: hasShortAnswer ? null : score, status: 'awaiting_feedback' as const, submittedAt, alreadySubmitted: false as const };
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('INSERT INTO quiz_attempts (id, quiz_id, answers, encrypted_answers, nonce, integrity_hash, score, graded, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, quiz.id, 'ENCRYPTED', encrypted, nonceValue, integrityHash, null, 0, 'awaiting_feedback', submittedAt);
+    await db.runAsync('INSERT INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', id, 'quiz-attempt', protectJson({quizId: quiz.id, answers}), submittedAt);
+  });
+  return { id, quizId: quiz.id, score: null, status: 'awaiting_feedback' as const, submittedAt, alreadySubmitted: false as const };
 }
 
 export async function createEvent(input: Omit<CalendarEvent, 'id'> & { id?: string }) {
@@ -416,8 +436,8 @@ export async function createSubmission(input: Omit<Submission, 'id' | 'createdAt
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     const protectedContent = input.content === null || input.content === undefined ? null : protectJson({ content: input.content });
-    await db.runAsync('INSERT INTO submissions (id, assignment_id, kind, uri, file_name, mime_type, size, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.assignmentId, input.kind, input.uri, input.fileName, input.mimeType, input.size ?? null, protectedContent, createdAt, 'completed');
-    await db.runAsync('UPDATE assignments SET completed = 1, progress = 100, status = ? WHERE id = ?', 'Completed', input.assignmentId);
+    await db.runAsync('INSERT INTO submissions (id, assignment_id, kind, uri, file_name, mime_type, size, content, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, input.assignmentId, input.kind, input.uri, input.fileName, input.mimeType, input.size ?? null, protectedContent, createdAt, 'pending');
+    await db.runAsync('UPDATE assignments SET status = ? WHERE id = ?', 'Saved locally — pending transfer', input.assignmentId);
     await db.runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', `submission-${id}`, 'submission', protectJson({ id, assignmentId: input.assignmentId, kind: input.kind, uri: input.uri, fileName: input.fileName, mimeType: input.mimeType, content: input.content ?? null }), createdAt);
   });
   return id;
@@ -473,12 +493,27 @@ export async function removePendingChange(id: string) {
   await (await getDatabase()).runAsync('DELETE FROM outbox WHERE id = ?', id);
 }
 
-export async function enqueuePendingChange(change: { id: string; type: string; payload: Record<string, string | number | boolean>; createdAt: string }) {
+export async function enqueuePendingChange(change: { id: string; type: string; payload: Record<string, unknown>; createdAt: string }) {
   await (await getDatabase()).runAsync('INSERT OR REPLACE INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', change.id, change.type, protectJson(change.payload), change.createdAt);
 }
 
 export async function clearPendingChanges() {
   await (await getDatabase()).runAsync('DELETE FROM outbox');
+}
+
+export async function cacheValue(key: string, value: unknown) {
+  await (await getDatabase()).runAsync('INSERT OR REPLACE INTO sync_metadata VALUES (?, ?)', `cache:${key}`, protectJson(value));
+}
+export async function cachedValue<T>(key: string): Promise<T | null> {
+  const row = await (await getDatabase()).getFirstAsync<{value: string}>('SELECT value FROM sync_metadata WHERE key=?', `cache:${key}`);
+  return row ? unprotectJson<T>(row.value) : null;
+}
+export async function queueMutation(path: string, method: string, body: Record<string, unknown>) {
+  const id = `mutation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await (await getDatabase()).runAsync('INSERT INTO outbox (id, type, payload, created_at) VALUES (?, ?, ?, ?)', id, 'mutation', protectJson({path, method, body}), new Date().toISOString());
+}
+export async function acknowledgeSubmission(id: string) {
+  await (await getDatabase()).runAsync("UPDATE submissions SET status='completed' WHERE id=?", id);
 }
 
 export async function getLocalUsers() {

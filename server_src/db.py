@@ -35,6 +35,13 @@ class Database:
                 connection.execute("ALTER TABLE submissions ADD COLUMN graded_at TEXT")
             if "graded_by" not in columns:
                 connection.execute("ALTER TABLE submissions ADD COLUMN graded_by TEXT")
+            connection.execute('CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)')
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES ('001_initial_schema')")
+            for migration in sorted((self.schema_path.parent / 'migrations').glob('*.sql')):
+                if connection.execute('SELECT version FROM schema_migrations WHERE version=?', (migration.stem,)).fetchone(): continue
+                connection.executescript(migration.read_text(encoding='utf-8'))
+                connection.execute('INSERT INTO schema_migrations(version) VALUES (?)', (migration.stem,))
+            connection.execute('PRAGMA user_version = 2')
 
     @staticmethod
     def row(row):

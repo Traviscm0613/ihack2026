@@ -4,13 +4,16 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { faArrowLeft, faArrowRight, faCamera, faFileArrowUp, faImage } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'react';
-import { Platform, Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { Assignment, SubmissionType } from '../data/mockData';
 import { createSubmission } from '../db/database';
 import { AppIcon } from '../components/AppIcon';
 import { theme } from '../theme';
 import {LocalServerClient} from '../services/serverApi';
 import {syncQueue} from '../services/syncQueue';
+import {FileAttachments} from '../components/FileAttachments';
+import {cacheValue, cachedValue} from '../db/database';
+import {useEffect} from 'react';
 
 const labels: Record<SubmissionType, string> = { file: 'Upload a file', photo: 'Choose a picture', scan: 'Scan with camera' };
 const icons = { file: faFileArrowUp, photo: faImage, scan: faCamera };
@@ -18,7 +21,12 @@ const icons = { file: faFileArrowUp, photo: faImage, scan: faCamera };
 export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignment: Assignment; onBack: () => void; onSubmitted: () => Promise<void> }) {
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const [written, setWritten] = useState('');
+  useEffect(() => {cachedValue<string>(`written:${assignment.id}`).then(value => {if(value) setWritten(value);});}, [assignment.id]);
   const [staged, setStaged] = useState<{ kind: SubmissionType; uri: string; fileName: string; mimeType: string; size: number | null; content: string | null } | null>(null);
+  const [stageReady, setStageReady] = useState(false);
+  useEffect(() => {cachedValue<NonNullable<typeof staged>>(`staged:${assignment.id}`).then(value => {setStaged(value); setStageReady(true);});}, [assignment.id]);
+  useEffect(() => {if(stageReady) void cacheValue(`staged:${assignment.id}`, staged);}, [staged, stageReady, assignment.id]);
 
   const chooseSubmission = async (kind: SubmissionType) => {
     try {
@@ -74,10 +82,12 @@ export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignme
       setSaving(true);
       const client = new LocalServerClient();
       await createSubmission({ assignmentId: assignment.id, ...staged });
-      const result = await syncQueue.flush(client);
-      await onSubmitted();
       setStaged(null);
-      setMessage(result.failed.length ? 'Saved on this device. Reconnect and refresh to send to your teacher.' : 'Received by your teacher.');
+      setMessage('Saved on this device. It will be sent automatically when the Pi is reachable.');
+      void syncQueue.flush(client).then(async result => {
+        setMessage(result.failed.length ? 'Saved on this device. Reconnect to send it to your teacher.' : 'Received by your teacher.');
+        await onSubmitted();
+      }).catch(error => setMessage(String(error)));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not submit this work.');
     } finally {
@@ -90,8 +100,16 @@ export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignme
     <Text style={styles.eyebrow}>SUBMIT WORK</Text>
     <Text style={styles.title}>{assignment.title}</Text>
     <Text style={styles.className}>{assignment.subject} · {assignment.teacher}</Text>
-    <View style={styles.card}><Text style={styles.label}>Due date</Text><Text style={styles.value}>{assignment.dueDate}</Text><Text style={styles.label}>Instructions</Text><Text style={styles.description}>{assignment.description || 'No additional instructions.'}</Text></View>
+    {assignment.submissionStatus ? <Text style={styles.message}>{assignment.submissionStatus.replace(/_/g, ' ')}{assignment.submittedAt ? ` · Received ${new Date(assignment.submittedAt).toLocaleString()}` : ''}</Text> : null}
+    {assignment.grade !== null || assignment.feedback ? <View style={styles.card}><Text style={styles.sectionTitle}>Teacher feedback</Text><Text style={styles.value}>{assignment.grade !== null ? `Grade: ${assignment.grade}` : 'Not graded yet'}</Text><Text style={styles.description}>{assignment.feedback || 'No written feedback yet.'}</Text></View> : null}
+    <View style={styles.card}><Text style={styles.label}>Due date</Text><Text style={styles.value}>{assignment.dueAt ? new Date(assignment.dueAt).toLocaleString() : assignment.dueDate}</Text><Text style={styles.label}>Instructions</Text><Text style={styles.description}>{assignment.description || 'No additional instructions.'}</Text></View>
+    {assignment.resources?.length ? <View style={styles.card}><Text style={styles.sectionTitle}>Assignment documents</Text><FileAttachments files={assignment.resources}/></View> : null}
     <Text style={styles.sectionTitle}>Choose a submission</Text>
+    {assignment.submissionTypes.includes('file') ? <View style={styles.card}><Text style={styles.label}>Write your response</Text><TextInput multiline value={written} onChangeText={value => {setWritten(value); void cacheValue(`written:${assignment.id}`, value);}} placeholder="Write here. Your draft saves on this device." placeholderTextColor={theme.colors.muted} style={[styles.description, {minHeight: 120, padding: 12, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 10}]}/><Pressable disabled={!written.trim() || saving} onPress={async () => {
+      const uri = `data:text/plain;charset=utf-8,${encodeURIComponent(written)}`;
+      setStaged({kind: 'file', uri, fileName: 'written-response.txt', mimeType: 'text/plain', size: new TextEncoder().encode(written).length, content: uri});
+      setMessage('Response ready. Confirm submission below.');
+    }}><Text style={styles.backText}>Use this written response</Text></Pressable></View> : null}
     {assignment.submissionTypes.map((type) => <Pressable key={type} disabled={saving} onPress={() => chooseSubmission(type)} style={styles.option}><AppIcon icon={icons[type]} size={17} color={theme.colors.violet} /><View style={styles.optionCopy}><Text style={styles.optionTitle}>{labels[type]}</Text><Text style={styles.optionBody}>{type === 'file' ? 'Select a PDF, DOCX, or other document.' : type === 'photo' ? 'Use a saved picture of your work.' : 'Take a photo of handwritten work.'}</Text></View><AppIcon icon={faArrowRight} size={13} color={theme.colors.violet} /></Pressable>)}
     {staged ? <View style={styles.staged}><View style={styles.stagedIcon}><AppIcon icon={icons[staged.kind]} size={15} color={theme.colors.violet} /></View><View style={styles.stagedCopy}><Text style={styles.stagedTitle}>Ready to submit</Text><Text numberOfLines={1} style={styles.stagedFile}>{staged.fileName}</Text></View><Pressable onPress={() => setStaged(null)}><Text style={styles.remove}>Remove</Text></Pressable></View> : null}
     {staged ? <Pressable disabled={saving} onPress={confirmSubmission} style={styles.submitButton}><Text style={styles.submitButtonText}>{saving ? 'Submitting…' : 'Submit assignment'}</Text></Pressable> : null}

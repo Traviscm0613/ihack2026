@@ -1,6 +1,7 @@
-import { clearPendingChanges, enqueuePendingChange, getPendingChangeCount, getPendingChanges, recordPendingChangeFailure, removePendingChange } from '../db/database';
+import { clearPendingChanges, enqueuePendingChange, getPendingChangeCount, getPendingChanges, recordPendingChangeFailure, removePendingChange, acknowledgeSubmission } from '../db/database';
 import type { LocalServerClient } from './serverApi';
 import {Platform} from 'react-native';
+import {accountScope} from '../db/database';
 
 export type SyncState = 'synced' | 'pending' | 'offline';
 
@@ -17,6 +18,7 @@ export type SyncResult = {
 };
 
 export class LocalSyncQueue {
+  private flushing: Promise<SyncResult> | null = null;
   enqueue(change: PendingChange) {
     return enqueuePendingChange(change);
   }
@@ -33,7 +35,12 @@ export class LocalSyncQueue {
     return (await this.pendingCount()) ? 'pending' : 'synced';
   }
 
-  async flush(client: LocalServerClient): Promise<SyncResult> {
+  flush(client: LocalServerClient): Promise<SyncResult> {
+    if (!this.flushing) this.flushing = this.flushPending(client).finally(() => {this.flushing = null;});
+    return this.flushing;
+  }
+  private async flushPending(client: LocalServerClient): Promise<SyncResult> {
+    const scope = accountScope();
     const pending = await getPendingChanges();
     if (!pending.length) return { accepted: [], failed: [] };
     const failed: SyncResult['failed'] = [];
@@ -41,21 +48,42 @@ export class LocalSyncQueue {
     try {
       for (const item of pending) {
         try {
-          if (item.type !== 'submission') throw new Error('Unsupported operation; retained for review.');
           const p = item.payload;
+          if (item.type === 'mutation') {
+            const body = {...p.body as Record<string, unknown>};
+            const files = (body.__files ?? []) as {id: string; uri: string; name: string; type: string}[];
+            delete body.__files;
+            await client.replay(String(p.path), body, String(p.method));
+            for (const attachment of files) {
+              const form = new FormData();
+              form.append('uploadId', attachment.id);
+              if (Platform.OS === 'web') form.append('file', await (await fetch(attachment.uri)).blob(), attachment.name);
+              else form.append('file', {uri: attachment.uri, name: attachment.name, type: attachment.type} as unknown as Blob);
+              const file = await client.upload(form);
+              await client.replay(`/api/assignments/${body.id}/resources`, {...file, resourceId: attachment.id});
+            }
+            accepted.push(item.id); continue;
+          }
+          if (item.type === 'quiz-attempt') {await client.attemptQuiz(String(p.quizId), p.answers as Record<string, string>); accepted.push(item.id); continue;}
+          if (item.type !== 'submission') throw new Error('Unsupported operation; retained for review.');
           const form = new FormData();
-          if (Platform.OS === 'web') {
+          form.append('uploadId', item.id);
+          if (Platform.OS === 'web' || String(p.uri).startsWith('data:')) {
             const response = await fetch(String(p.content ?? p.uri));
             form.append('file', await response.blob(), String(p.fileName ?? 'submission.bin'));
           } else form.append('file', {uri: p.uri, name: p.fileName ?? 'submission.bin', type: p.mimeType ?? 'application/octet-stream'} as unknown as Blob);
           const file = await client.upload(form);
-          const submission = await client.submit({id: p.id, assignmentId: p.assignmentId});
+          const submission = await client.submit({id: p.id, assignmentId: p.assignmentId, kind: p.kind});
           await client.attach(submission.id, file);
+          if(scope !== accountScope()) return {accepted: [], failed: []};
+          await acknowledgeSubmission(String(p.id));
           accepted.push(item.id);
         } catch(error) {
+          if(scope !== accountScope()) return {accepted: [], failed: []};
           const reason = String(error); failed.push({id: item.id, reason}); await recordPendingChangeFailure(item.id, reason);
         }
       }
+      if(scope !== accountScope()) return {accepted: [], failed: []};
       for (const id of accepted) await removePendingChange(id);
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'Sync failed.';

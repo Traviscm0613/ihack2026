@@ -8,6 +8,9 @@ type ProtectedEnvelope = {
 };
 
 let protectionSecret = 'development-only-locallearn-secret';
+let restoredKey: Uint8Array | null = null;
+export function exportProtectionKey() {return toBase64(key());}
+export function restoreProtectionKey(value: string) {restoredKey = fromBase64(value);}
 
 const encoder = new TextEncoder();
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -41,10 +44,12 @@ function fromBase64(value: string) {
 }
 
 function key() {
+  if (restoredKey) return restoredKey;
   return nacl.hash(encoder.encode(`LocalLearn:${protectionSecret}`)).slice(0, nacl.secretbox.keyLength);
 }
 
 export function configureDataProtection(secret: string) {
+  restoredKey = null;
   if (secret.trim()) protectionSecret = secret;
 }
 

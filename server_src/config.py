@@ -9,6 +9,7 @@ class Settings:
     # Port 9000 is used by the LocalLearn file and sync service.
     port: int = int(os.getenv("LOCALLEARN_PORT", "9000"))
     data_dir: Path = Path(os.getenv("LOCALLEARN_DATA_DIR", "./server_data"))
+    web_dir: Path = Path(os.getenv('LOCALLEARN_WEB_DIR', str(Path(__file__).resolve().parent.parent / 'dist')))
     max_upload_bytes: int = int(os.getenv("LOCALLEARN_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 
     @property

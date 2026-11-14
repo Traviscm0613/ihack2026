@@ -1,6 +1,12 @@
 export type SubmissionType = 'file' | 'photo' | 'scan';
 
 export type Assignment = {
+  resources?: {id: string; name: string; mimeType: string}[];
+  dueAt?: string;
+  allowLate?: boolean;
+  allowResubmission?: boolean;
+  submissionStatus?: string;
+  submittedAt?: string;
   id: string;
   title: string;
   subject: string;
