@@ -179,6 +179,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(self.service.snapshot(user["id"] if user else None)); return
         if path.startswith("/api/files/"):
             self.download_file(path.split("/")[-1]); return
+        if path.startswith('/api/classes/') and path.endswith('/members'):
+            user = self.require({'teacher', 'administrator'})
+            if not user: return
+            if not self.can_manage(user, path.split('/')[3]): return
+            with self.service.db.connection() as db:
+                rows = db.execute("SELECT u.id, u.username, u.display_name AS displayName, u.active FROM class_memberships m JOIN users u ON u.id=m.user_id WHERE m.class_id=? AND m.removed_at IS NULL AND m.membership_role='student' ORDER BY u.display_name", (path.split('/')[3],)).fetchall()
+            self.send_json([dict(row) for row in rows]); return
         if path.startswith('/api/quizzes/') and path.endswith('/attempts'):
             user = self.require({'teacher', 'administrator'})
             if not user: return
@@ -393,6 +400,11 @@ class Handler(BaseHTTPRequestHandler):
     def enroll(self, class_id, data):
         if not self.require({"teacher", "administrator"}): return
         with self.service.db.connection() as db:
+            if data.get('username'):
+                student = db.execute("SELECT id FROM users WHERE username=? AND role='student' AND active=1", (str(data['username']).strip(),)).fetchone()
+                if not student: self.error(404, 'Active student account not found. Check the username with your school administrator.'); return
+                data['userId'] = student['id']
+            if not db.execute("SELECT id FROM users WHERE id=? AND role='student' AND active=1", (data.get('userId'),)).fetchone(): self.error(400, 'Select an active student account'); return
             if not db.execute("SELECT id FROM classes WHERE id = ?", (class_id,)).fetchone() or not db.execute("SELECT id FROM users WHERE id = ?", (data.get("userId"),)).fetchone(): self.error(HTTPStatus.NOT_FOUND, "Class or user not found"); return
             db.execute("INSERT OR REPLACE INTO class_memberships VALUES (?, ?, 'student', ?, NULL)", (class_id, data["userId"], timestamp()))
         self.empty()

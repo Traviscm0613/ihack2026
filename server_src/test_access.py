@@ -39,6 +39,15 @@ class AccessTest(unittest.TestCase):
                 status, school = call('/api/classes', {'name': 'Math', 'teacherId': 'teacher'}, tokens['admin'])
                 self.assertEqual(status, 201, school)
                 self.assertEqual(call(f"/api/classes/{school['id']}/members", {'userId': 'student'}, tokens['admin'])[0], 204)
+                members_path = f"/api/classes/{school['id']}/members"
+                self.assertEqual(call(members_path, {'username': 'peer'}, tokens['other'])[0], 403)
+                self.assertEqual(call(members_path, {'username': 'peer'}, tokens['student'])[0], 403)
+                self.assertEqual(call(members_path, {'username': 'peer'}, tokens['teacher'])[0], 204)
+                roster = call(members_path, token=tokens['teacher'])[1]
+                self.assertEqual({row['username'] for row in roster}, {'student', 'peer'})
+                self.assertTrue(all('password_hash' not in row for row in roster))
+                self.assertEqual(call(members_path, {'username': 'teacher'}, tokens['teacher'])[0], 404)
+                self.assertEqual(call(members_path + '/peer', token=tokens['teacher'], verb='DELETE')[0], 204)
                 status, assignment = call('/api/assignments', {'classId': school['id'], 'title': 'Homework'}, tokens['teacher'])
                 self.assertEqual(status, 201, assignment)
                 self.assertEqual(call('/api/snapshot', token=tokens['peer'])[1]['assignments'], [])

@@ -163,6 +163,8 @@ export class LocalServerClient {
   createClass(input: Record<string, unknown>) { return this.request<SchoolClass>('/api/classes', { method: 'POST', body: JSON.stringify(input) }); }
   updateClass(id: string, input: Record<string, unknown>) { return this.request<SchoolClass>(`/api/classes/${id}`, { method: 'PATCH', body: JSON.stringify(input) }); }
   enroll(classId: string, userId: string) { return this.request<void>(`/api/classes/${classId}/members`, { method: 'POST', body: JSON.stringify({ userId }) }); }
+  enrollByUsername(classId: string, username: string) {return this.request<void>(`/api/classes/${classId}/members`, {method: 'POST', body: JSON.stringify({username})});}
+  roster(classId: string) {return this.request<{id: string; username: string; displayName: string; active: boolean}[]>(`/api/classes/${classId}/members`);}
   removeEnrollment(classId: string, userId: string) { return this.request<void>(`/api/classes/${classId}/members/${userId}`, { method: 'DELETE' }); }
   createAssignment(input: Record<string, unknown>) { return this.request<Assignment>('/api/assignments', { method: 'POST', body: JSON.stringify(input) }); }
   updateAssignment(id: string, input: Record<string, unknown>) { return this.request<Assignment>(`/api/assignments/${id}`, { method: 'PATCH', body: JSON.stringify(input) }); }

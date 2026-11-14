@@ -1,6 +1,7 @@
+import {createThemedStyles} from './src/theme';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, Text, View } from 'react-native';
 import { Dashboard } from './src/screens/Dashboard';
 import { NavigationBar } from './src/components/NavigationBar';
 import { activeTheme, setTheme, theme, themes, type ThemeName } from './src/theme';
@@ -35,7 +36,7 @@ export default function App() {
 function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () => void}) {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const role = session.user.role;
-  const [themeVersion, setThemeVersion] = useState(0);
+  const [, setThemeVersion] = useState(0);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
@@ -94,8 +95,8 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="dark" />
-      <View key={themeVersion} style={styles.app}>
+      <StatusBar style={activeTheme === 'Dark Study Mode' ? 'light' : 'dark'} />
+      <View style={styles.app}>
         <View style={styles.header}>
           <View style={styles.headerTitle}>
             <Text style={styles.brand}>LocalLearn</Text>
@@ -103,11 +104,11 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
           </View>
           <View style={styles.headerTools}><View style={styles.roleButton}><Text style={styles.roleLabel}>{role}</Text></View><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>Local server</Text></View></View>
         </View>
-        <Pressable accessibilityRole="button" onPress={onLogout}><Text>Sign out · {session.user.displayName}</Text></Pressable>
-        <Pressable accessibilityRole="button" onPress={() => void refreshDatabase()}><Text>Refresh grades and sync work</Text></Pressable>
+        <View style={styles.accountBar}><Text style={styles.accountName}>{session.user.displayName} · {role}</Text><Pressable accessibilityRole="button" onPress={onLogout} style={styles.accountButton}><Text style={styles.accountAction}>Sign out</Text></Pressable></View>
+        <Pressable accessibilityRole="button" onPress={() => void refreshDatabase()} style={styles.refreshButton}><Text style={styles.accountAction}>↻ Refresh grades and sync work</Text></Pressable>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (
-            selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => { setSelectedAssignmentId(null); setActiveTab('Assignments'); }} onSubmitted={refreshDatabase} /> : <Dashboard assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} pendingChanges={pendingChanges} serverUrl={getConfiguredServerUrl()} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectClass={(classId) => { setSelectedClassId(classId); setActiveTab('Classes'); }} onViewAllAssignments={() => setActiveTab('Assignments')} />
+            selectedAssignmentId ? <SubmissionScreen assignment={(databaseState.data?.assignments ?? []).find((item) => item.id === selectedAssignmentId)!} onBack={() => { setSelectedAssignmentId(null); setActiveTab('Assignments'); }} onSubmitted={refreshDatabase} /> : <Dashboard displayName={session.user.displayName} assignments={filteredAssignments} classes={databaseState.data?.classes ?? []} event={databaseState.data?.event ?? null} events={databaseState.data?.events ?? []} pendingChanges={pendingChanges} serverUrl={getConfiguredServerUrl()} query={query} onQueryChange={setQuery} onNavigateCalendar={() => setActiveTab('Calendar')} onSelectAssignment={(assignment) => setSelectedAssignmentId(assignment.id)} onSelectClass={(classId) => { setSelectedClassId(classId); setActiveTab('Classes'); }} onViewAllAssignments={() => setActiveTab('Assignments')} />
           ) : activeTab === 'Calendar' ? (
             <CalendarScreen events={databaseState.data?.events ?? []} onSaved={refreshDatabase} onOpenAssignment={(assignmentId) => { setSelectedAssignmentId(assignmentId); setActiveTab('Assignments'); }} />
            ) : activeTab === 'Workspace' && role === 'administrator' ? (
@@ -128,12 +129,17 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles({
+  accountBar: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 14, gap: 12},
+  accountName: {color: theme.colors.muted, fontSize: 12, flexShrink: 1},
+  accountAction: {color: theme.colors.violet, fontSize: 12, fontWeight: '700'},
+  accountButton: {padding: 10, borderRadius: 10, backgroundColor: theme.colors.violetSoft},
+  refreshButton: {alignSelf: 'flex-start', marginHorizontal: 20, marginVertical: 10, padding: 10, borderRadius: 10, backgroundColor: theme.colors.violetSoft},
   safeArea: { flex: 1, backgroundColor: theme.colors.page },
   app: { flex: 1 },
-  header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', position: 'relative', zIndex: 10 },
+  header: { paddingHorizontal: 20, paddingVertical: 15, backgroundColor: theme.colors.white, borderBottomWidth: 1, borderBottomColor: theme.colors.line, flexDirection: 'row', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', position: 'relative', zIndex: 10 },
   headerTitle: { alignItems: 'center' },
-  headerTools: { position: 'absolute', right: 20, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerTools: {flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8},
   roleButton: { borderWidth: 1, borderColor: theme.colors.violet, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
   roleLabel: { color: theme.colors.violet, fontSize: 9, fontWeight: '800', textTransform: 'uppercase' },
   themePicker: { position: 'relative', zIndex: 20 },
@@ -154,7 +160,7 @@ const styles = StyleSheet.create({
   serverIndicator: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: theme.colors.greenSoft, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 9 },
   pulse: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.green },
   serverText: { color: theme.colors.green, fontSize: 10, fontWeight: '700' },
-  content: { padding: 18, paddingBottom: 28 },
+  content: { padding: 18, paddingBottom: 28, width: '100%', maxWidth: 1100, alignSelf: 'center' },
   databaseMessage: { alignItems: 'center', paddingVertical: 40 },
   databaseMessageText: { color: theme.colors.muted, fontSize: 12, marginTop: 10, textAlign: 'center' },
   databaseError: { color: '#c45f69', fontSize: 15, fontWeight: '800' },

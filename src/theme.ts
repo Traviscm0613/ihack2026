@@ -28,7 +28,22 @@ export function setTheme(name: ThemeName) {
   try {
     if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) {
       globalThis.localStorage.setItem('localLearnTheme', name);
-      globalThis.location?.reload();
     }
   } catch (_) { /* Native runtimes do not expose browser storage or reload. */ }
+}
+
+// Resolve palette tokens when a style is read, rather than freezing the colors
+// at module import. This lets existing screens update without a page reload.
+export function createThemedStyles<const T extends Record<string, object>>(definitions: T): T {
+  const palette = {...theme.colors};
+  const resolve = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const token = (Object.keys(palette) as (keyof ThemeColors)[]).find(key => palette[key] === value);
+      return token ? theme.colors[token] : value;
+    }
+    if (Array.isArray(value)) return value.map(resolve);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolve(item)]));
+    return value;
+  };
+  return new Proxy(definitions, {get(target, key: string) {return resolve(target[key as keyof T]);}});
 }
