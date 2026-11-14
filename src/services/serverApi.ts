@@ -52,8 +52,16 @@ export type SyncOperation = {
   createdAt: string;
 };
 
-export const DEFAULT_RASPBERRY_PI_URL = 'http://photobooth';
-export const DEFAULT_RASPBERRY_PI_URLS = ['http://photobooth:8090', 'http://photobooth.local:8090', 'http://192.168.4.1:8090'];
+export const DEFAULT_RASPBERRY_PI_URL = 'http://photobooth:9000';
+export const DEFAULT_RASPBERRY_PI_URLS = [
+  'http://photobooth:9000',
+  'http://photobooth.local:9000',
+  'http://192.168.4.1:9000',
+  // Compatibility with a Pi service that has not been restarted after the port change.
+  'http://photobooth:8090',
+  'http://photobooth.local:8090',
+  'http://192.168.4.1:8090',
+];
 
 let activeServerToken: string | null = null;
 

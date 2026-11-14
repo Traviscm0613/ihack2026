@@ -1,6 +1,6 @@
 # LocalLearn Raspberry Pi server
 
-A small Python HTTP API backed by SQLite. It uses only Python's standard library, so no pip packages or database server need to be installed on the Pi. The application API is assigned port 8090 because 8080 is used by the existing gameboard. Existing gallery, gameboard, NetworkManager, and dnsmasq services do not need to be changed.
+A small Python HTTP API backed by SQLite. It uses only Python's standard library, so no pip packages or database server need to be installed on the Pi. The application API is assigned port 9000. Existing gallery, gameboard, NetworkManager, and dnsmasq services do not need to be changed.
 
 ## Dependencies on the Pi
 
@@ -48,16 +48,16 @@ Replace the sample password before running the command. The backend stores a pas
 
 ```sh
 cd /home/pi/school/ihack2026
-sudo -u locallearn env LOCALLEARN_DATA_DIR=/var/lib/locallearn LOCALLEARN_HOST=0.0.0.0 LOCALLEARN_PORT=8090 python3 -m server_src
+sudo -u locallearn env LOCALLEARN_DATA_DIR=/var/lib/locallearn LOCALLEARN_HOST=0.0.0.0 LOCALLEARN_PORT=9000 python3 -m server_src
 ```
 
 Leave that SSH session running. From a second SSH session, check the local API:
 
 ```sh
-curl http://127.0.0.1:8090/api/admin/health
+curl http://127.0.0.1:9000/api/admin/health
 ```
 
-The admin health route requires login in the current implementation; use the app to log in, or check that the process is listening with `ss -ltnp | grep 8090`. On a phone connected to `Photobooth-AP`, configure the Expo build with `EXPO_PUBLIC_LMS_SERVER_URL=http://192.168.4.1:8090`. For the demo account, provide the admin-created student credentials using the app's login configuration. Do not put a real password into a source-controlled `.env` file.
+The admin health route requires login in the current implementation; use the app to log in, or check that the process is listening with `ss -ltnp | grep 9000`. On a phone connected to `Photobooth-AP`, configure the Expo build with `EXPO_PUBLIC_LMS_SERVER_URL=http://192.168.4.1:9000`. For the demo account, provide the admin-created student credentials using the app's login configuration. Do not put a real password into a source-controlled `.env` file.
 
 ## Run at boot with systemd
 
@@ -76,7 +76,7 @@ Group=locallearn
 WorkingDirectory=/home/pi/school/ihack2026
 Environment=LOCALLEARN_DATA_DIR=/var/lib/locallearn
 Environment=LOCALLEARN_HOST=0.0.0.0
-Environment=LOCALLEARN_PORT=8090
+Environment=LOCALLEARN_PORT=9000
 ExecStart=/usr/bin/python3 -m server_src
 Restart=on-failure
 RestartSec=3
