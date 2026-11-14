@@ -6,6 +6,7 @@ import json
 import shutil
 import sqlite3
 import threading
+import traceback
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -99,20 +100,28 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("%s - %s" % (self.address_string(), fmt % args))
 
+    def cors_headers(self):
+        # Keep the local API usable from Expo web and from a browser opened on
+        # the Pi hostname.  The API is intended to stay on the private hotspot
+        # LAN, so wildcard access is appropriate here and avoids coupling the
+        # Pi to a particular dev-server port.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Max-Age", "86400")
+
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.cors_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def empty(self):
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.cors_headers()
         self.end_headers()
 
     def error(self, status, message):
@@ -141,9 +150,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.cors_headers()
         self.end_headers()
 
     def do_GET(self):
@@ -179,7 +186,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
-        if path == "/api/files/upload": self.upload(); return
+        if path == "/api/files/upload":
+            try:
+                self.upload()
+            except Exception as exc:
+                # Never leave a browser fetch with ERR_EMPTY_RESPONSE. Keep
+                # details in the Pi journal while returning a safe diagnostic.
+                print(f"Upload failed: {exc}")
+                traceback.print_exc()
+                self.error(HTTPStatus.INTERNAL_SERVER_ERROR, "Upload processing failed")
+            return
         try: data = self.read_json()
         except (ValueError, json.JSONDecodeError) as exc: self.error(HTTPStatus.BAD_REQUEST, str(exc)); return
         if path == "/api/auth/login":
@@ -294,9 +310,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"accepted": accepted, "rejected": rejected})
 
     def upload(self):
-        length = int(self.headers.get("Content-Length", "0")); content_type = self.headers.get("Content-Type", "")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.error(HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+            return
+        content_type = self.headers.get("Content-Type", "")
         if length > self.service.settings.max_upload_bytes: self.error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "File is too large"); return
         if not content_type.startswith("multipart/form-data"): self.error(HTTPStatus.BAD_REQUEST, "Expected multipart/form-data"); return
+        if "boundary=" not in content_type: self.error(HTTPStatus.BAD_REQUEST, "Multipart boundary is missing"); return
         raw = self.rfile.read(length)
         message = BytesParser(policy=policy.default).parsebytes((f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n").encode() + raw)
         item = next((part for part in message.iter_parts() if part.get_param("name", header="content-disposition") == "file"), None)

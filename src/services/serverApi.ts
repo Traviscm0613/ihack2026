@@ -52,10 +52,12 @@ export type SyncOperation = {
   createdAt: string;
 };
 
-export const DEFAULT_RASPBERRY_PI_URL = 'http://photobooth:9000';
+// Use the hostname that is known to resolve in the browser.  The bare
+// `photobooth` name is not resolvable by every Expo web environment.
+export const DEFAULT_RASPBERRY_PI_URL = 'http://photobooth.local:9000';
 export const DEFAULT_RASPBERRY_PI_URLS = [
-  'http://photobooth:9000',
   'http://photobooth.local:9000',
+  'http://photobooth:9000',
   'http://192.168.4.1:9000',
   // Compatibility with a Pi service that has not been restarted after the port change.
   'http://photobooth:8090',

@@ -67,7 +67,10 @@ export function DebugScreen({ classes, onSaved }: { classes: SchoolClass[]; onSa
           lastError = error instanceof Error ? error.message : 'No HTTP response was received.';
         }
       }
-      throw new Error(`${lastError} Tried the Photobooth hostnames and hotspot address. If this is Expo web, the Pi API must also allow CORS from the app’s origin.`);
+      const browserHint = Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:'
+        ? ' The Expo web page is HTTPS but the Pi URLs are HTTP; browsers block that as mixed content. Run Expo web over HTTP or put the Pi API behind HTTPS.'
+        : ' If this is Expo web, confirm the Pi API is running the current server code and allows CORS from the app origin.';
+      throw new Error(`${lastError} Tried the Photobooth hostnames and hotspot address.${browserHint}`);
     } catch (error) {
       setFileMessage(error instanceof Error ? `Unable to send file: ${error.message}` : 'Unable to send file to the Raspberry Pi.');
     } finally { setSendingFile(false); }
