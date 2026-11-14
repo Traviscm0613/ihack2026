@@ -1,0 +1,31 @@
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { faArrowLeft, faBook, faCommentDots, faFileLines, faListCheck } from '@fortawesome/free-solid-svg-icons';
+import { AppIcon } from '../components/AppIcon';
+import { Assignment } from '../data/mockData';
+import { ClassMaterial, Quiz, SchoolClass } from '../db/database';
+import { theme } from '../theme';
+
+const today = '2026-11-13';
+
+export function ClassDetailScreen({ classRow, assignments, materials, quizzes, onBack, onSelectAssignment, onSelectMaterial, onSelectQuiz }: { classRow: SchoolClass; assignments: Assignment[]; materials: ClassMaterial[]; quizzes: Quiz[]; onBack: () => void; onSelectAssignment: (assignment: Assignment) => void; onSelectMaterial: (material: ClassMaterial) => void; onSelectQuiz: (quiz: Quiz) => void }) {
+  const current = assignments.filter((assignment) => assignment.dueDate >= today);
+  const past = assignments.filter((assignment) => assignment.dueDate < today);
+  return <View>
+    <Pressable style={styles.back} onPress={onBack}><AppIcon icon={faArrowLeft} size={12} color={theme.colors.violet} /><Text style={styles.backText}>Back to classes</Text></Pressable>
+    <View style={styles.hero}><Text style={styles.eyebrow}>CLASS DETAILS</Text><Text style={styles.title}>{classRow.name}</Text><Text style={styles.teacher}>{classRow.teacher} · {classRow.location}</Text><Text style={styles.description}>{classRow.description || 'Class description will appear here.'}</Text></View>
+    <Text style={styles.sectionTitle}>Class materials</Text>
+    <View style={styles.materials}>{materials.length ? materials.map((material) => <Pressable style={styles.material} key={material.id} onPress={() => onSelectMaterial(material)}><AppIcon icon={material.type === 'textbook' ? faBook : faFileLines} size={15} color={theme.colors.violet} /><View><Text style={styles.materialTitle}>{material.title}</Text><Text style={styles.materialType}>{material.type}</Text></View></Pressable>) : <Text style={styles.empty}>Syllabus, textbooks, and other class resources will appear here.</Text>}</View>
+    <Text style={styles.sectionTitle}>Quizzes</Text>
+    <View style={styles.assignmentCard}>{quizzes.length ? quizzes.map((quiz) => <Pressable style={styles.assignment} key={quiz.id} onPress={() => onSelectQuiz(quiz)}><AppIcon icon={faListCheck} size={15} color={theme.colors.violet} /><View style={styles.assignmentCopy}><Text style={styles.assignmentTitle}>{quiz.title}</Text><Text style={styles.assignmentDue}>Due {quiz.dueDate} · {quiz.questions.length} questions</Text></View><Text style={styles.open}>Take quiz</Text></Pressable>) : <Text style={styles.empty}>No quizzes have been added.</Text>}</View>
+    <Text style={styles.sectionTitle}>Current assignments</Text>
+    <View style={styles.assignmentCard}>{current.length ? current.map((assignment) => <AssignmentRow assignment={assignment} onSelect={onSelectAssignment} key={assignment.id} />) : <Text style={styles.empty}>No current assignments.</Text>}</View>
+    <Text style={styles.sectionTitle}>Past assignments</Text>
+    <View style={styles.assignmentCard}>{past.length ? past.map((assignment) => <AssignmentRow assignment={assignment} onSelect={onSelectAssignment} key={assignment.id} past />) : <Text style={styles.empty}>No past assignments yet.</Text>}</View>
+  </View>;
+}
+
+function AssignmentRow({ assignment, onSelect, past = false }: { assignment: Assignment; onSelect: (assignment: Assignment) => void; past?: boolean }) {
+  return <Pressable style={styles.assignment} onPress={() => onSelect(assignment)}><View style={styles.assignmentCopy}><Text style={styles.assignmentTitle}>{assignment.title}</Text><Text style={styles.assignmentDue}>{assignment.due}</Text>{past && assignment.grade !== null ? <View style={styles.feedback}><Text style={styles.grade}>{assignment.grade}%</Text><AppIcon icon={faCommentDots} size={11} color={theme.colors.violet} /><Text numberOfLines={1} style={styles.feedbackText}>{assignment.feedback || 'No written feedback.'}</Text></View> : null}</View><Text style={styles.open}>View</Text></Pressable>;
+}
+
+const styles = StyleSheet.create({ back: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 22 }, backText: { color: theme.colors.violet, fontSize: 12, fontWeight: '800' }, hero: { backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 14, padding: 18, marginBottom: 19 }, eyebrow: { color: theme.colors.violet, fontSize: 10, fontWeight: '800', letterSpacing: 1.1 }, title: { color: theme.colors.ink, fontSize: 28, fontWeight: '800', marginTop: 7 }, teacher: { color: theme.colors.muted, fontSize: 11, marginTop: 5 }, description: { color: theme.colors.muted, fontSize: 12, lineHeight: 18, marginTop: 14 }, sectionTitle: { color: theme.colors.ink, fontSize: 16, fontWeight: '800', marginBottom: 9, marginTop: 4 }, materials: { backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 13, paddingHorizontal: 15, marginBottom: 19 }, material: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#eef0f5' }, materialTitle: { color: theme.colors.ink, fontSize: 12, fontWeight: '800' }, materialType: { color: theme.colors.muted, fontSize: 9, marginTop: 3, textTransform: 'capitalize' }, assignmentCard: { backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 13, paddingHorizontal: 15, marginBottom: 19 }, assignment: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eef0f5' }, assignmentCopy: { flex: 1 }, assignmentTitle: { color: theme.colors.ink, fontSize: 12, fontWeight: '800' }, assignmentDue: { color: theme.colors.muted, fontSize: 9, marginTop: 4 }, feedback: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }, grade: { color: theme.colors.green, fontSize: 11, fontWeight: '800' }, feedbackText: { color: theme.colors.muted, fontSize: 9, flex: 1 }, open: { color: theme.colors.violet, fontSize: 10, fontWeight: '800' }, empty: { color: theme.colors.muted, fontSize: 11, lineHeight: 17, paddingVertical: 15 } });
