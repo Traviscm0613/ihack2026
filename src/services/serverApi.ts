@@ -52,6 +52,9 @@ export type SyncOperation = {
   createdAt: string;
 };
 
+export const DEFAULT_RASPBERRY_PI_URL = 'http://photobooth';
+export const DEFAULT_RASPBERRY_PI_URLS = ['http://photobooth', 'http://photobooth.local', 'http://192.168.4.1:8000'];
+
 export class LocalServerClient {
   readonly baseUrl: string;
   private token: string | null;
@@ -128,7 +131,12 @@ export class LocalServerClient {
 }
 
 export function getConfiguredServerUrl() {
-  return process.env.EXPO_PUBLIC_LMS_SERVER_URL?.replace(/\/$/, '') ?? null;
+  return process.env.EXPO_PUBLIC_LMS_SERVER_URL?.replace(/\/$/, '') ?? DEFAULT_RASPBERRY_PI_URL;
+}
+
+export function getConfiguredServerUrls() {
+  const configured = process.env.EXPO_PUBLIC_LMS_SERVER_URL?.replace(/\/$/, '');
+  return configured ? [configured] : DEFAULT_RASPBERRY_PI_URLS;
 }
 
 export async function fetchServerSnapshot(serverUrl: string): Promise<ServerSnapshot> {
