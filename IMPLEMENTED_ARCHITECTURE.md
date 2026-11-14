@@ -1,80 +1,62 @@
 # LocalLearn implemented architecture
 
-This document is the implementation handoff for the current React Native/Expo client. It records the behavior that is in the repository now and the Raspberry Pi integration points that remain deployment-specific.
+Verified on November 14, 2026. `architecture.md` describes the product direction; this file records the implementation and its deployment limits.
 
-## Runtime shape
+## Runtime and authentication
 
-The client is a local-first Expo application. `App.tsx` owns navigation, the active role workspace, theme selection, database initialization, and refresh behavior. The app defaults to the student experience and has a role switcher for exercising the teacher and administrator surfaces until server authentication is connected.
+The Expo/React Native client uses the authenticated server role for student, teacher, and administrator navigation. There is no production role switcher or automatic login using bundled passwords. The Python standard-library API in `server_src/` runs on the Raspberry Pi and owns the authoritative SQLite database and uploaded files.
 
-The three supported application roles are:
+First login requires the school's LAN and a school account. Subsequent launches restore the session and local encryption key from the device settings database before making network requests. Sessions have no idle expiry, survive Pi restarts, and are removed from the client only by manual sign-out. Disabled accounts cannot access the server; a disconnected device can still open its existing cache. No plaintext login password is retained. Session credentials and the encryption key are protected by application storage permissions, not a hardware keystore.
 
-- Student: dashboard, calendar, assignments, class materials, assignment staging/submission, quiz attempts, local completion, and offline outbox state.
-- Teacher: assignment publishing, submission review, grading/feedback, return/revision decisions, class context, and local sync state.
-- Administrator: account creation/disablement, local user inventory, health status, backup readiness, and the server operations area.
+Each account has a separate SQLite cache. New native resource and submission files use account-specific directories. Account-generation checks reject stale clients after sign-out, including signing back into the same account. Manual sign-out waits for the saved session to be removed; an unreachable Pi does not prevent local sign-out. Server-side token revocation requires the Pi to receive the logout request.
 
-`src/components/NavigationBar.tsx` exposes student navigation separately from the staff navigation. The current role button is deliberately a temporary development control; production should replace it with the authenticated session returned by `/api/auth/login`.
+## Assignments and classroom documents
 
-## Local data layer
+The teacher composer supports:
 
-`src/db/database.ts` is the client cache and work area. It is never intended to be the Raspberry Pi database. The database contains cached classes, assignments, events, materials, quizzes, quiz questions, immutable quiz attempts, submissions, users, class memberships, outbox records, and sync metadata.
+- Whole-class or selected-student assignments with title, description/instructions, local due date and optional time (11:59 PM when blank).
+- File, photo, and camera submission choices, plus late and resubmission rules.
+- Multiple reference documents, with a persistent local draft and attachment removal before publication.
+- Text-based class materials and a question builder for multiple-choice, true/false, and written-answer quizzes.
+- Question prompts, answer choices, correct-answer selection, point values, and adding/removing questions.
 
-Important local-first rules implemented:
+Teacher publication first enters an encrypted outbox with stable operation and attachment IDs. Native documents are copied into application storage; browser document data is retained in encrypted cache records. A retry reuses those IDs instead of creating another assignment or upload.
 
-1. Assignment and event writes are immediately available offline.
-2. Submission confirmation creates a stable submission id, marks the work locally complete, and inserts an outbox record.
-3. Completion and grading changes are queued with stable ids so retries do not create duplicate operations.
-4. Quiz answers are encrypted locally, integrity-protected, and quiz attempt rows are immutable through SQLite triggers.
-5. Personal/local calendar entries are distinct from server-backed events.
-6. Browser builds keep selected submission data in SQLite; native builds may use a file URI in the same record.
-7. Versioned server migrations remain separate from the client cache schema.
+Snapshots include assignment descriptions, deadlines, rules, resource metadata, and submission receipts. Sync waits for resource download attempts, caches successful files for disconnected access, and displays a retry indicator if a resource could not be downloaded. Other documents and classroom metadata remain usable when one resource fails. Native files are downloaded to temporary paths and become cache entries only after a successful response.
 
-The current seed accounts (`demo-student`, `demo-teacher`, and `demo-admin`) exist only for local development. They are not production credentials.
+Student written drafts and staged files are saved locally. Confirmation creates the local submission and outbox record together. Locally confirmed work counts as completed but displays `saved_locally` until the Pi receives the file and attaches it to the submission. Native written responses are converted into files for upload, including data-URL responses queued by older versions. The server excludes incomplete uploads from teacher reviews and completed assignment receipts.
 
-## Server boundary
+## Quiz and calendar behavior
 
-`src/services/serverApi.ts` contains the single typed integration boundary, `LocalServerClient`. Set `EXPO_PUBLIC_LMS_SERVER_URL` to the Raspberry Pi base URL; no other client code should construct Pi URLs directly.
+A student quiz attempt is immutable after local insertion. Answers use the account's authenticated encryption envelope with a nonce and integrity digest. Native encryption uses Expo Crypto for secure randomness. Written-answer attempts remain ungraded until teacher review; objective answers are scored by the Pi, and teacher scores appear in subsequent snapshots. Server question IDs and quiz deadlines survive synchronization.
 
-## Local confidentiality and tamper resistance
+The student quiz screen restores its saved attempt and draft before allowing submission, prevents repeated taps while saving, and requests answers to all questions. Assignments and quizzes have distinct completion checks. Date filters include the entire final Sunday. Assignment calendar entries update when their deadlines change; downloaded quizzes also create local calendar entries.
 
-Sensitive local submission content, grading changes, and every outbox payload are stored as authenticated `tweetnacl.secretbox` envelopes with a nonce, ciphertext, and integrity digest. The sync queue decrypts and validates each record before sending it, retains failed records with an attempt count/error, and removes records only after the server acknowledges their stable operation ids. Quiz answers use the same authenticated-encryption approach and remain immutable after insertion.
+## Synchronization and authorization
 
-The protection key is configured from the authenticated server session token after `LocalServerClient.login`. The temporary offline/demo role switch uses a development fallback key and is not a security boundary. Production must replace that switcher with login/session restoration backed by platform secure storage (for example, Expo SecureStore) before deploying shared devices.
+The client opens its account cache before background sync. A worker retries every 20 seconds while the app is running, and the refresh control retries immediately. Refreshes share one in-flight operation. Failed outbox records remain queued with diagnostic information; successful records are removed only after delivery. Applying a snapshot preserves pending local submissions and immutable quiz attempts, hides revoked records from navigation, and retains unpublished local entities and personal calendar events.
 
-Encryption cannot make a client device trustworthy against a student who controls the operating system, can reverse engineer the app, or can edit the local database. The Raspberry Pi remains authoritative: it must authenticate every request, authorize every role/entity, validate grades and roster changes, reject malformed or replayed operation ids, and return authoritative status in snapshots. Local encryption protects data at rest and detects ordinary local tampering; it does not replace server authorization.
+The server checks authentication, roles, class ownership/enrollment, file ownership, and submission access. Mutation receipts reject reuse of an operation ID with different data. Server authorization remains authoritative; local encryption is not a substitute for access control.
 
-Implemented client methods and expected endpoint shapes:
+Administrators can manage users/classes/enrollment and request backups/restores. Backups include the SQLite database and uploaded files. Teacher workspaces support roster changes, missing-submission review, numeric or letter grading, written feedback, returns, revision requests, quiz review, and queued submissions on behalf of enrolled students. Individual assignment recipients are enforced for snapshots, file access, and submissions. Class creation supports optional sections. Administrators can see server storage availability.
 
-| Capability | Endpoint |
-| --- | --- |
-| Login/logout | `POST /api/auth/login`, `POST /api/auth/logout` |
-| Snapshot | `GET /api/snapshot` |
-| Health/overview | `GET /api/admin/health`, `GET /api/admin/overview` |
-| User administration | `POST/PATCH/DELETE /api/admin/users` |
-| Classes and enrollment | `POST/PATCH /api/classes`, `POST/DELETE /api/classes/:id/members` |
-| Assignments | `POST/PATCH /api/assignments` |
-| Submission review | `GET /api/assignments/:id/submissions` |
-| Grade/return/revision | `POST /api/submissions/:id/grade` |
-| Calendar | `POST /api/calendar/events` |
-| Backup/restore | `POST /api/admin/backups`, `POST /api/admin/backups/:id/restore` |
+## Deployment
 
-The API client adds the bearer token, JSON headers, consistent error handling, and trailing-slash normalization. UI mutations attempt the server call when configured but retain the local result when the Pi is unavailable; the outbox/sync service is the place to add retry delivery and server acknowledgement handling.
+- Configure `EXPO_PUBLIC_LMS_SERVER_URL` if the default Pi addresses are unsuitable. In a production browser build, the app first uses the HTTPS origin serving it. Explicit HTTPS origins retain their default port.
+- Bootstrap an administrator as described in `server_src/README.md`. Do not bundle usernames/passwords in Expo public environment variables.
+- Build Android packages with application code bundled locally. Expo Go and development-server sessions are not standalone offline installations. Native dependency changes require a rebuilt application.
+- For browser deployment, run `npm run build:web:offline`, copy `dist/` to the Pi, and use HTTPS with a browser-trusted certificate. The Pi serves the SQLite isolation headers. Plain LAN HTTP cannot provide browser offline cold starts. Native Android remains the first target.
+- A resource must finish downloading once before disconnected use. Clearing browser storage, uninstalling the app, or deleting application data removes the login and unsent local work.
 
-## Server database and storage
+## Verification
 
-`migrations/001_initial_schema.sql` defines the authoritative server model in SQLite: users and roles, classes/memberships, assignments/resources, submissions/files/feedback, curriculum units/lessons, quizzes/attempts, learning reviews, calendar events, class materials, learner portfolio/transfer codes, sync operation idempotency, and schema migration tracking. The Pi database is the source of truth; each client has a separate Expo SQLite cache and never opens the Pi database file. `server-database-architecture.md` documents the SQLite setup, storage layout, backup expectations, security boundary, and API responsibilities.
+- TypeScript type checking.
+- Twelve client regression tests covering encrypted saves, offline session/key restoration, attachment retries and offline reads, partial-download cleanup, account isolation, HTTPS discovery, pending completion, immutable attempts, local deadlines, and native written-response uploads.
+- Python API integration covering authentication and role/class boundaries, assignment metadata/resources, original file bytes, incomplete-upload visibility, grading/feedback, quiz scoring and written-answer review, persistent sessions across restarts, disabled accounts, logout, individual recipient privacy, teacher-assisted submissions, letter grades, storage reporting, database upgrades, and file/database backup restoration.
+- Production web export and Android JavaScript/Hermes export. These exports do not replace installation and device testing of a signed APK.
 
-<<<<<<< HEAD
-The client/server connection uses Photobooth port 9000, probes the configured hostname and hotspot fallbacks at startup, and shares the discovered URL with all API clients. The client is prepared for the server endpoints and does not access server SQL directly.
-=======
-`server_src/` provides the Raspberry Pi implementation: endpoint handlers, authentication/session issuance, role checks, SQLite persistence, multipart file storage, submission file attachment/download, backups, restore, sync idempotency, CORS, and health metrics. The client is prepared for those endpoints and does not access server SQL directly.
->>>>>>> bdb58b778f911779bb72d693142aa250a9eacb5e
+## Remaining product and deployment scope
 
-## Verification and deployment checklist
+The requested assignment, quiz, offline session, and classroom delivery flows are implemented. Existing installations receive server migration 003 for individual assignment recipients and class sections; the client upgrades its cache to version 4. Restoring a backup applies current server migrations before resuming service.
 
-1. Set `EXPO_PUBLIC_LMS_SERVER_URL` to `http://photobooth` (or the Pi LAN address).
-2. Set `EXPO_PUBLIC_LMS_USERNAME` and `EXPO_PUBLIC_LMS_PASSWORD` for the account the app should use; the app logs in at startup and shares that token with all API clients.
-3. Run `python3 -m server_src.bootstrap_admin ...` on the Pi before first launch.
-4. Make sync processing idempotent using the outbox record id / `sync_operations` table.
-5. Return a snapshot compatible with `ServerSnapshot` and include authoritative grade/status updates.
-6. Test offline submission, reconnect/retry, logout/session expiry, shared-device separation, backup/restore, and full-storage behavior on target Android devices.
-
+No physical Pi/Android/iOS deployment, camera/file-handler check on target hardware, full-storage/power-loss test, multi-device load test, school certificate provisioning, or offline installation/update package distribution was performed in this review. Those remain deployment acceptance work. Advanced quizzes, large media, and collaborative documents remain future scope from `architecture.md`.

@@ -2,7 +2,7 @@ import type { Assignment } from '../data/mockData';
 import type { CalendarEvent, SchoolClass, Quiz, ClassMaterial } from '../db/database';
 import { configureDataProtection } from './dataProtection';
 import {saveSession} from './sessionStorage';
-import {cacheValue, cachedValue, queueMutation, accountScope} from '../db/database';
+import {cacheValue, cachedValue, queueMutation, accountScope, accountStorageName} from '../db/database';
 import * as FileSystem from 'expo-file-system/legacy';
 import {Platform} from 'react-native';
 
@@ -76,15 +76,21 @@ let activeServerUrl: string | null = null;
 
 function normalizeServerUrl(value: string) {
   const trimmed = value.replace(/\/$/, '');
-  return /^https?:\/\/[^/:]+$/.test(trimmed) || /^https?:\/\/\[[^\]]+\]$/.test(trimmed)
+  return /^http:\/\/[^/:]+$/.test(trimmed) || /^http:\/\/\[[^\]]+\]$/.test(trimmed)
     ? `${trimmed}:9000`
     : trimmed;
 }
 
 export class LocalServerClient {
   fromCache = false;
+  downloadError: string | null = null;
   readonly baseUrl: string;
   private token: string | null;
+  private scope = accountScope();
+
+  private assertAccount() {
+    if (this.scope !== accountScope()) throw Error('Account changed during request');
+  }
 
   constructor(baseUrl = activeServerUrl ?? getConfiguredServerUrl() ?? '', token: string | null = activeServerToken) {
     this.baseUrl = normalizeServerUrl(baseUrl);
@@ -97,6 +103,7 @@ export class LocalServerClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    this.assertAccount();
     const scope = accountScope();
     if (!this.baseUrl) throw new Error('No Raspberry Pi server URL is configured.');
 
@@ -134,6 +141,7 @@ export class LocalServerClient {
   }
 
   async mutate<T>(path: string, input: Record<string, unknown>, method = 'POST'): Promise<{queued: boolean; result?: T}> {
+    this.assertAccount();
     const body = {...input, id: input.id ?? `client-${Date.now()}-${Math.random().toString(36).slice(2)}`};
     // Save first so closing the app during an upload does not lose the draft.
     await queueMutation(path, method, body);
@@ -159,16 +167,22 @@ export class LocalServerClient {
   }
   health() { return this.request<ServerHealth>('/api/admin/health'); }
   async snapshot() {
+    this.downloadError = null;
     const snapshot = await this.request<ServerSnapshot>('/api/snapshot');
-    void this.prefetch(snapshot.assignments.flatMap(a => a.resources ?? []));
+    await this.prefetch(snapshot.assignments.flatMap(a => a.resources ?? [])).catch(error => {this.assertAccount(); this.downloadError = String(error);});
     return snapshot;
   }
   async prefetch(files: {id: string; name: string}[]) {
     const scope = accountScope();
+    let failure: Error | null = null;
     for (const f of files) {
       if(scope !== accountScope()) return;
-      try {if(Platform.OS === 'web') await this.file(f.id); else await this.downloadFile(f.id, f.name);} catch {return;}
+      try {if(Platform.OS === 'web') await this.file(f.id); else await this.downloadFile(f.id, f.name);} catch(error) {
+        this.assertAccount();
+        failure = new Error(`Could not download ${f.name}. Reconnect and sync again. ${String(error)}`);
+      }
     }
+    if (failure) throw failure;
   }
   createQuiz(input: Record<string, unknown>) { return this.request('/api/quizzes', {method: 'POST', body: JSON.stringify(input)}); }
   createMaterial(input: Record<string, unknown>) { return this.request('/api/materials', {method: 'POST', body: JSON.stringify(input)}); }
@@ -179,12 +193,19 @@ export class LocalServerClient {
   submit(input: Record<string, unknown>) { return this.request<{id: string}>('/api/submissions', {method: 'POST', body: JSON.stringify(input)}); }
   attach(id: string, file: Record<string, unknown>) { return this.request(`/api/submissions/${id}/files`, {method: 'POST', body: JSON.stringify(file)}); }
   async file(id: string) {
+    this.assertAccount();
     const scope = accountScope();
     const saved = await cachedValue<string>(`file:${id}`);
     if (saved) return (await fetch(saved)).blob();
-    const response = await fetch(`${this.baseUrl}/api/files/${id}`, {headers: {Authorization: `Bearer ${this.token}`}});
-    if (!response.ok) throw new Error(`File access failed (${response.status})`);
-    const blob = await response.blob();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let blob: Blob;
+    try {
+      const response = await fetch(`${this.baseUrl}/api/files/${id}`, {signal: controller.signal, headers: {Authorization: `Bearer ${this.token}`}});
+      if (!response.ok) throw new Error(`File access failed (${response.status})`);
+      blob = await response.blob();
+      this.assertAccount();
+    } finally {clearTimeout(timer);}
     if (typeof FileReader !== 'undefined') {
       const value = await new Promise<string>((resolve, reject) => {const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob);});
       if(scope === accountScope()) await cacheValue(`file:${id}`, value);
@@ -192,13 +213,22 @@ export class LocalServerClient {
     return blob;
   }
   async downloadFile(id: string, name: string) {
-    const directory = `${FileSystem.documentDirectory}classroom-files/`;
+    this.assertAccount();
+    const directory = `${FileSystem.documentDirectory}classroom-files/${accountStorageName()}/`;
     await FileSystem.makeDirectoryAsync(directory, {intermediates: true});
     const uri = `${directory}${id}-${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-    if ((await FileSystem.getInfoAsync(uri)).exists) return FileSystem.getContentUriAsync(uri);
-    const result = await FileSystem.downloadAsync(`${this.baseUrl}/api/files/${id}`, uri, {headers: {Authorization: `Bearer ${this.token}`}});
-    if (result.status !== 200) throw new Error('File download failed');
-    return FileSystem.getContentUriAsync(result.uri);
+    if ((await FileSystem.getInfoAsync(uri)).exists) return Platform.OS === 'android' ? FileSystem.getContentUriAsync(uri) : uri;
+    const temporaryUri = `${uri}.${Date.now()}-${Math.random().toString(36).slice(2)}.part`;
+    try {
+      const result = await FileSystem.downloadAsync(`${this.baseUrl}/api/files/${id}`, temporaryUri, {headers: {Authorization: `Bearer ${this.token}`}});
+      this.assertAccount();
+      if (result.status !== 200) throw new Error('File download failed');
+      await FileSystem.moveAsync({from: temporaryUri, to: uri});
+    } catch(error) {
+      await FileSystem.deleteAsync(temporaryUri, {idempotent: true});
+      throw error;
+    }
+    return Platform.OS === 'android' ? FileSystem.getContentUriAsync(uri) : uri;
   }
   adminOverview() { return this.request<AdminOverview>('/api/admin/overview'); }
 
@@ -221,7 +251,7 @@ export class LocalServerClient {
   updateAssignment(id: string, input: Record<string, unknown>) { return this.request<Assignment>(`/api/assignments/${id}`, { method: 'PATCH', body: JSON.stringify(input) }); }
   async submissions(assignmentId: string) {
     const reviews = await this.request<TeacherSubmission[]>(`/api/assignments/${assignmentId}/submissions`);
-    void this.prefetch(reviews.flatMap(r => r.files));
+    await this.prefetch(reviews.flatMap(r => r.files)).catch(error => {this.assertAccount(); this.downloadError = String(error);});
     return reviews;
   }
 
@@ -236,13 +266,16 @@ export class LocalServerClient {
 }
 
 export function getConfiguredServerUrl() {
-  return activeServerUrl ?? (process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : DEFAULT_RASPBERRY_PI_URL);
+  return activeServerUrl ?? (process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : webServerOrigin() ?? DEFAULT_RASPBERRY_PI_URL);
+}
+function webServerOrigin() {
+  return Platform.OS === 'web' && process.env.NODE_ENV === 'production' && typeof location !== 'undefined' ? location.origin : null;
 }
 export function restoreServerConnection(serverUrl: string, token: string) {activeServerUrl = serverUrl; activeServerToken = token;}
 
 export function getConfiguredServerUrls() {
   const configured = process.env.EXPO_PUBLIC_LMS_SERVER_URL ? normalizeServerUrl(process.env.EXPO_PUBLIC_LMS_SERVER_URL) : undefined;
-  return configured ? [configured] : DEFAULT_RASPBERRY_PI_URLS;
+  return configured ? [configured] : [...new Set([webServerOrigin(), ...DEFAULT_RASPBERRY_PI_URLS].filter((url): url is string => !!url))];
 }
 
 export function getConfiguredServerCredentials() {

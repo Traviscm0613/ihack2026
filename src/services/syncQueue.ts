@@ -1,7 +1,7 @@
 import { clearPendingChanges, enqueuePendingChange, getPendingChangeCount, getPendingChanges, recordPendingChangeFailure, removePendingChange, acknowledgeSubmission } from '../db/database';
 import type { LocalServerClient } from './serverApi';
 import {Platform} from 'react-native';
-import {accountScope} from '../db/database';
+import {accountScope, accountStorageName} from '../db/database';
 
 export type SyncState = 'synced' | 'pending' | 'offline';
 
@@ -47,6 +47,7 @@ export class LocalSyncQueue {
     let accepted: string[] = [];
     try {
       for (const item of pending) {
+        if (scope !== accountScope()) return {accepted: [], failed: []};
         try {
           const p = item.payload;
           if (item.type === 'mutation') {
@@ -68,12 +69,27 @@ export class LocalSyncQueue {
           if (item.type !== 'submission') throw new Error('Unsupported operation; retained for review.');
           const form = new FormData();
           form.append('uploadId', item.id);
-          if (Platform.OS === 'web' || String(p.uri).startsWith('data:')) {
+          if (Platform.OS === 'web') {
             const response = await fetch(String(p.content ?? p.uri));
             form.append('file', await response.blob(), String(p.fileName ?? 'submission.bin'));
-          } else form.append('file', {uri: p.uri, name: p.fileName ?? 'submission.bin', type: p.mimeType ?? 'application/octet-stream'} as unknown as Blob);
+          } else {
+            let uri = String(p.uri);
+            if (uri.startsWith('data:')) {
+              // Native HTTP clients cannot fetch data URLs. Stage written responses
+              // as files, including responses queued by earlier app versions.
+              const fs = await import('expo-file-system/legacy');
+              const directory = `${fs.documentDirectory}submissions/${accountStorageName()}/`;
+              await fs.makeDirectoryAsync(directory, {intermediates: true});
+              const comma = uri.indexOf(',');
+              const base64 = uri.slice(0, comma).endsWith(';base64');
+              const content = base64 ? uri.slice(comma + 1) : decodeURIComponent(uri.slice(comma + 1));
+              uri = `${directory}${item.id.replace(/[^a-zA-Z0-9._-]/g, '_')}.txt`;
+              await fs.writeAsStringAsync(uri, content, {encoding: base64 ? fs.EncodingType.Base64 : fs.EncodingType.UTF8});
+            }
+            form.append('file', {uri, name: p.fileName ?? 'submission.bin', type: p.mimeType ?? 'application/octet-stream'} as unknown as Blob);
+          }
           const file = await client.upload(form);
-          const submission = await client.submit({id: p.id, assignmentId: p.assignmentId, kind: p.kind});
+          const submission = await client.submit({id: p.id, assignmentId: p.assignmentId, studentId: p.studentId, kind: p.kind});
           await client.attach(submission.id, file);
           if(scope !== accountScope()) return {accepted: [], failed: []};
           await acknowledgeSubmission(String(p.id));
@@ -84,8 +100,12 @@ export class LocalSyncQueue {
         }
       }
       if(scope !== accountScope()) return {accepted: [], failed: []};
-      for (const id of accepted) await removePendingChange(id);
+      for (const id of accepted) {
+        if (scope !== accountScope()) return {accepted: [], failed: []};
+        await removePendingChange(id);
+      }
     } catch (error) {
+      if (scope !== accountScope()) return {accepted: [], failed: []};
       const reason = error instanceof Error ? error.message : 'Sync failed.';
       for (const item of pending) {
         failed.push({ id: item.id, reason });

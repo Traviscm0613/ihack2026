@@ -1,6 +1,6 @@
 import {createThemedStyles} from './src/theme';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, Text, View } from 'react-native';
 import { Dashboard } from './src/screens/Dashboard';
 import { NavigationBar } from './src/components/NavigationBar';
@@ -23,11 +23,12 @@ import { syncQueue } from './src/services/syncQueue';
 import {LoginScreen} from './src/screens/LoginScreen';
 import type {Session} from './src/services/serverApi';
 import {readSession, clearSession} from './src/services/sessionStorage';
-import {selectUserDatabase} from './src/db/database';
+import {selectUserDatabase, accountScope, invalidateAccount} from './src/db/database';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const [logoutError, setLogoutError] = useState('');
   useEffect(() => {
     if (process.env.NODE_ENV === 'production' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator && globalThis.isSecureContext) {
       void navigator.serviceWorker.register('/sw.js').catch(console.warn);
@@ -38,15 +39,19 @@ export default function App() {
   }).catch(console.warn).finally(() => setRestoring(false));}, []);
   if (restoring) return <SafeAreaView style={{flex: 1, justifyContent: 'center'}}><ActivityIndicator/></SafeAreaView>;
   if (!session) return <LoginScreen onLogin={setSession}/>;
-  return <AuthenticatedApp key={session.user.id} session={session} onLogout={() => {
+  return <AuthenticatedApp key={session.user.id} session={session} logoutError={logoutError} onLogout={async () => {
     const client = new LocalServerClient();
+    try {await clearSession();} catch {setLogoutError('Could not save sign out. Please try again.'); return;}
     void client.logout().catch(() => {});
-    void clearSession();
+    invalidateAccount();
+    setLogoutError('');
     client.setToken(null); setSession(null);
   }}/>;
 }
 
-function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () => void}) {
+function AuthenticatedApp({session, onLogout, logoutError}: {session: Session; onLogout: () => void; logoutError: string}) {
+  const refreshing = useRef<Promise<void> | null>(null);
+  const scope = useRef(accountScope()).current;
   const [activeTab, setActiveTab] = useState('Dashboard');
   const role = session.user.role;
   const [, setThemeVersion] = useState(0);
@@ -77,17 +82,23 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
   useEffect(() => {
     if (!selectedClassId) {
       setClassDetail(null);
+      setSelectedMaterialId(null);
       return;
     }
-    getClassDetail(selectedClassId).then(setClassDetail).catch(() => setClassDetail(null));
+    getClassDetail(selectedClassId).then(detail => {
+      setSelectedMaterialId(current => current && detail.materials.some(item => item.id === current) ? current : null);
+      setClassDetail(detail);
+    }).catch(() => setClassDetail(null));
   }, [selectedClassId, databaseState.data]);
-  const refreshDatabase = async () => {
+  const performRefresh = async () => {
+    if (scope !== accountScope()) return;
     try {
       const client = new LocalServerClient();
       await syncQueue.flush(client);
       const snapshot = await client.snapshot();
+      if (scope !== accountScope()) return;
       await applyServerSnapshot(snapshot);
-      setConnectionStatus(client.fromCache ? 'Offline cache' : 'Pi connected');
+      setConnectionStatus(client.downloadError ? 'Documents pending — sync again' : client.fromCache ? 'Offline cache' : 'Pi connected');
       if (!client.fromCache && role === 'teacher') {
         await Promise.allSettled([
           ...snapshot.classes.map(c => client.roster(c.id)),
@@ -97,10 +108,19 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
       }
       if (!client.fromCache && role === 'administrator') await client.adminOverview();
     } catch(error) {setConnectionStatus('Offline cache'); console.warn('Offline; showing this account’s cache', error);}
+    if (scope !== accountScope()) return;
     const data = await getDashboardData();
+    if (scope !== accountScope()) return;
+    setSelectedAssignmentId(current => current && data.assignments.some(item => item.id === current) ? current : null);
+    setSelectedQuizId(current => current && data.quizzes.some(item => item.id === current) ? current : null);
+    setSelectedClassId(current => current && data.classes.some(item => item.id === current) ? current : null);
     setDatabaseState({ loading: false, error: null, data });
     setPendingChanges(await getPendingChangeCount());
     if (selectedClassId) setClassDetail(await getClassDetail(selectedClassId));
+  };
+  const refreshDatabase = () => {
+    if (!refreshing.current) refreshing.current = performRefresh().finally(() => {refreshing.current = null;});
+    return refreshing.current;
   };
   useEffect(() => {
     if (databaseState.loading || databaseState.error) return;
@@ -127,6 +147,7 @@ function AuthenticatedApp({session, onLogout}: {session: Session; onLogout: () =
           <View style={styles.headerTools}><View style={styles.roleButton}><Text style={styles.roleLabel}>{role}</Text></View><View style={styles.themePicker}><Pressable accessibilityRole="button" accessibilityLabel="Choose theme" onPress={() => setThemeMenuOpen((open) => !open)} style={styles.themePickerButton}><Text style={styles.themePickerLabel}>Theme</Text><Text numberOfLines={1} style={styles.themePickerValue}>{activeTheme}</Text><Text style={styles.themeChevron}>{themeMenuOpen ? '⌃' : '⌄'}</Text></Pressable>{themeMenuOpen ? <View style={styles.themeMenu}>{(Object.keys(themes) as ThemeName[]).map((name) => <Pressable key={name} onPress={() => { setTheme(name); setThemeVersion((version) => version + 1); setThemeMenuOpen(false); }} style={[styles.themeMenuItem, activeTheme === name && styles.themeMenuItemActive]}><View style={[styles.themeMenuSwatch, { backgroundColor: themes[name].colors.violet }]} /><Text style={[styles.themeMenuText, activeTheme === name && styles.themeMenuTextActive]}>{name}</Text>{activeTheme === name ? <Text style={styles.themeCheck}>✓</Text> : null}</Pressable>)}</View> : null}</View><View style={styles.serverIndicator}><View style={styles.pulse} /><Text style={styles.serverText}>{connectionStatus}</Text></View></View>
         </View>
         <View style={styles.accountBar}><Text style={styles.accountName}>{session.user.displayName} · {role}</Text><Pressable accessibilityRole="button" onPress={onLogout} style={styles.accountButton}><Text style={styles.accountAction}>Sign out</Text></Pressable></View>
+        {logoutError ? <Text accessibilityRole="alert">{logoutError}</Text> : null}
         <Pressable accessibilityRole="button" onPress={() => void refreshDatabase()} style={styles.refreshButton}><Text style={styles.accountAction}>↻ Refresh grades and sync work</Text></Pressable>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           {databaseState.loading ? <View style={styles.databaseMessage}><ActivityIndicator color={theme.colors.violet} /><Text style={styles.databaseMessageText}>Opening local database…</Text></View> : databaseState.error ? <View style={styles.databaseMessage}><Text style={styles.databaseError}>Local database unavailable</Text><Text style={styles.databaseMessageText}>{databaseState.error}</Text></View> : activeTab === 'Dashboard' ? (

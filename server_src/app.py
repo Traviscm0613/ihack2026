@@ -76,12 +76,12 @@ class LocalLearnServer:
             questions = db.execute("SELECT * FROM quiz_questions ORDER BY quiz_id, position").fetchall()
             materials = db.execute("SELECT * FROM class_materials ORDER BY title").fetchall()
             completed = {r['assignment_id'] for r in db.execute("SELECT assignment_id FROM submissions s WHERE student_id=? AND status NOT IN ('uploading', 'revision_requested') AND EXISTS (SELECT 1 FROM submission_files f WHERE f.submission_id=s.id)", (user_id,)).fetchall()} if user_id else set()
-        class_data = [{"id": r["id"], "name": r["name"], "sectionName": None, "teacher": r["teacher_name"], "location": r["room"] or "", "grade": r["term"] or "", "color": "purple", "description": r["description"]} for r in classes]
+        class_data = [{"id": r["id"], "name": r["name"], "sectionName": r["section_name"], "teacher": r["teacher_name"], "location": r["room"] or "", "grade": r["term"] or "", "color": "purple", "description": r["description"]} for r in classes]
         assignment_data = [{"id": r["id"], "title": r["title"], "subject": r["subject"], "teacher": r["teacher_name"], "due": r["due_at"] or "", "dueDate": (r["due_at"] or "")[:10], "progress": 100 if r["id"] in completed else 0, "status": "completed" if r["id"] in completed else "upcoming", "completed": r["id"] in completed, "tone": "math", "classId": r["class_id"], "description": r["description"], "submissionTypes": parse_json(r["allowed_submission_types"], ["file"]), "grade": None, "feedback": None} for r in assignments]
         event_data = [{"id": r["id"], "title": r["title"], "date": r["starts_at"][:10], "time": r["starts_at"][11:16], "notes": r["description"] or "", "kind": r["event_type"], "assignmentId": r["assignment_id"]} for r in events]
         quiz_data = []
         for quiz in quizzes:
-            quiz_data.append({"id": quiz["id"], "classId": quiz["class_id"], "title": quiz["title"], "description": quiz["description"], "dueDate": (quiz["due_at"] or "")[:10], "questions": [{"id": q["id"], "quizId": q["quiz_id"], "prompt": q["prompt"], "type": q["question_type"], "options": parse_json(q["options"], []), "correctAnswer": None, "points": q["points"]} for q in questions if q["quiz_id"] == quiz["id"]]})
+            quiz_data.append({"id": quiz["id"], "classId": quiz["class_id"], "title": quiz["title"], "description": quiz["description"], "dueDate": (quiz["due_at"] or "")[:10], "dueAt": quiz["due_at"], "questions": [{"id": q["id"], "quizId": q["quiz_id"], "prompt": q["prompt"], "type": q["question_type"], "options": parse_json(q["options"], []), "correctAnswer": None, "points": q["points"]} for q in questions if q["quiz_id"] == quiz["id"]]})
         material_data = [{"id": r["id"], "classId": r["class_id"], "title": r["title"], "type": r["material_type"], "uri": r["storage_key"], "content": r["content_text"] or ""} for r in materials]
         with self.db.connection() as db:
             viewer = db.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
@@ -91,6 +91,10 @@ class LocalLearnServer:
             if viewer['role'] == 'student':
                 visible = {r['class_id'] for r in db.execute('SELECT class_id FROM class_memberships WHERE user_id = ? AND removed_at IS NULL', (user_id,))}
             for item in assignment_data:
+                recipients = [r['student_id'] for r in db.execute('SELECT student_id FROM assignment_recipients WHERE assignment_id=?', (item['id'],))]
+                item['recipientIds'] = recipients
+                if viewer['role'] == 'student' and recipients and user_id not in recipients:
+                    item['hidden'] = True
                 resources = db.execute('SELECT * FROM assignment_resources WHERE assignment_id=?', (item['id'],)).fetchall()
                 item['resources'] = [{'id': Path(r['storage_key']).name, 'name': r['display_name'], 'mimeType': r['mime_type']} for r in resources]
                 source = next(r for r in assignments if r['id'] == item['id'])
@@ -102,8 +106,10 @@ class LocalLearnServer:
                     item['submissionStatus'] = receipt['status']
                     item['submittedAt'] = receipt['submitted_at']
                     item['grade'] = receipt['grade_value']
+                    item['gradeLabel'] = receipt['grade_label']
                     item['feedback'] = '\n'.join(r['comment'] for r in db.execute('SELECT comment FROM assignment_feedback WHERE submission_id = ? ORDER BY created_at', (receipt['id'],)))
-        return {"assignments": [a for a in assignment_data if a['classId'] in visible], "classes": [c for c in class_data if c['id'] in visible], "events": [e for e, r in zip(event_data, events) if r['class_id'] is None or r['class_id'] in visible], "quizzes": [q for q in quiz_data if q['classId'] in visible], "quizAttempts": attempts, "materials": [m for m in material_data if m['classId'] in visible], "serverTime": timestamp()}
+        visible_assignments = {a['id'] for a in assignment_data if a['classId'] in visible and not a.get('hidden')}
+        return {"assignments": [a for a in assignment_data if a['id'] in visible_assignments], "classes": [c for c in class_data if c['id'] in visible], "events": [e for e, r in zip(event_data, events) if (r['class_id'] is None or r['class_id'] in visible) and (not r['assignment_id'] or r['assignment_id'] in visible_assignments)], "quizzes": [q for q in quiz_data if q['classId'] in visible], "quizAttempts": attempts, "materials": [m for m in material_data if m['classId'] in visible], "serverTime": timestamp()}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -226,12 +232,13 @@ class Handler(BaseHTTPRequestHandler):
                 users = [public_user(r) for r in db.execute("SELECT * FROM users ORDER BY display_name").fetchall()]
                 classes = self.service.snapshot(self.service.user_for_token(self.auth_token())['id'])['classes']
                 backups = [dict(r) for r in db.execute("SELECT id, created_at AS createdAt, size_bytes AS sizeBytes, status FROM backup_runs ORDER BY created_at DESC").fetchall()]
-            self.send_json({"users": users, "classes": classes, "health": {"status": "ok", "database": "sqlite", "checkedAt": timestamp()}, "pendingBackups": backups}); return
+            total, used, free = shutil.disk_usage(self.service.settings.data_dir)
+            self.send_json({"users": users, "classes": classes, "health": {"status": "degraded" if free < 100 * 1024 * 1024 else "ok", "database": "sqlite", "checkedAt": timestamp(), "storage": {"usedBytes": used, "freeBytes": free, "totalBytes": total}}, "pendingBackups": backups}); return
         if path.startswith("/api/assignments/") and path.endswith("/submissions"):
             if not self.require({"teacher", "administrator"}): return
             assignment_id = path.split("/")[3]
             with self.service.db.connection() as db:
-                rows = db.execute("SELECT s.*, u.display_name AS student_name FROM submissions s JOIN users u ON u.id = s.student_id WHERE s.assignment_id = ? ORDER BY s.submitted_at DESC", (assignment_id,)).fetchall()
+                rows = db.execute("SELECT s.*, u.display_name AS student_name FROM submissions s JOIN users u ON u.id = s.student_id WHERE s.assignment_id = ? AND s.status != 'uploading' AND EXISTS (SELECT 1 FROM submission_files f WHERE f.submission_id=s.id) ORDER BY s.submitted_at DESC", (assignment_id,)).fetchall()
                 result = [self.submission_json(db, row) for row in rows]
             self.send_json(result); return
         self.error(HTTPStatus.NOT_FOUND, "Route not found")
@@ -303,6 +310,7 @@ class Handler(BaseHTTPRequestHandler):
     def create_quiz(self, data):
         user = self.require({'teacher', 'administrator'})
         if not user or not self.can_manage(user, data.get('classId')): return
+        if not str(data.get('title', '')).strip() or not data.get('questions'): raise ValueError('A quiz title and at least one question are required')
         quiz_id, created = data.get('id', uid()), timestamp()
         with self.service.db.connection() as db:
             db.execute('INSERT INTO quizzes VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', (quiz_id, data['classId'], user['id'], data['title'], data.get('description', ''), data.get('dueAt', data.get('dueDate')), created, created))
@@ -310,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 if q['type'] not in ('multiple_choice', 'short_answer'): raise ValueError('Invalid question type')
                 if not str(q.get('prompt', '')).strip() or not isinstance(q.get('points', 1), (int, float)) or q.get('points', 1) <= 0: raise ValueError('A question and positive points are required')
                 if q['type'] == 'multiple_choice' and (len(q.get('options', [])) < 2 or q.get('correctAnswer') not in q.get('options', [])): raise ValueError('Multiple-choice questions need options and a correct answer')
-                db.execute('INSERT INTO quiz_questions VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (uid(), quiz_id, position, q['prompt'], q['type'], json.dumps(q.get('options', [])), q.get('correctAnswer'), q.get('points', 1)))
+                db.execute('INSERT INTO quiz_questions VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (q.get('id') or uid(), quiz_id, position, q['prompt'], q['type'], json.dumps(q.get('options', [])), q.get('correctAnswer'), q.get('points', 1)))
         self.send_json({'id': quiz_id}, 201)
 
     def quiz_attempt(self, data):
@@ -347,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
         if user['role'] == 'teacher' and teacher_id != user['id']: self.error(403, 'Cannot create a class for another teacher'); return
         with self.service.db.connection() as db:
             if not db.execute("SELECT id FROM users WHERE id = ? AND role IN ('teacher','administrator')", (teacher_id,)).fetchone(): self.error(HTTPStatus.BAD_REQUEST, "teacherId must identify a teacher"); return
-            db.execute("INSERT INTO classes VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)", (class_id, data.get("name", "Untitled class"), data.get("description", ""), teacher_id, data.get("room", data.get("location", "")), data.get("term", data.get("grade", "")), created, created)); db.execute("INSERT OR REPLACE INTO class_memberships VALUES (?, ?, 'teacher', ?, NULL)", (class_id, teacher_id, created))
+            db.execute("INSERT INTO classes (id, name, description, teacher_id, room, term, active, created_at, updated_at, section_name) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)", (class_id, data.get("name", "Untitled class"), data.get("description", ""), teacher_id, data.get("room", data.get("location", "")), data.get("term", data.get("grade", "")), created, created, str(data.get('sectionName') or '').strip() or None)); db.execute("INSERT OR REPLACE INTO class_memberships VALUES (?, ?, 'teacher', ?, NULL)", (class_id, teacher_id, created))
         self.send_json(next(c for c in self.service.snapshot(user["id"])["classes"] if c["id"] == class_id), HTTPStatus.CREATED)
 
     def create_assignment(self, data):
@@ -365,7 +373,12 @@ class Handler(BaseHTTPRequestHandler):
             due = parsed.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         with self.service.db.connection() as db:
             if not db.execute("SELECT id FROM classes WHERE id = ?", (data["classId"],)).fetchone(): self.error(HTTPStatus.NOT_FOUND, "Class not found"); return
+            recipients = data.get('recipientIds', [])
+            if not isinstance(recipients, list): raise ValueError('Recipients must be a list of student IDs')
+            for student in recipients:
+                if not db.execute("SELECT u.id FROM users u JOIN class_memberships m ON m.user_id=u.id WHERE u.id=? AND u.role='student' AND u.active=1 AND m.class_id=? AND m.removed_at IS NULL", (student, data['classId'])).fetchone(): raise ValueError('Recipients must be enrolled students')
             db.execute("INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", (assignment_id, data["classId"], user["id"], data["title"], data.get("description", ""), due, json.dumps(data.get("submissionTypes", data.get("allowedSubmissionTypes", ["file"]))), as_bool(data.get("allowLate")), as_bool(data.get("allowResubmission"), False), created, created))
+            for student in set(recipients): db.execute('INSERT INTO assignment_recipients VALUES (?, ?)', (assignment_id, student))
         self.send_json(next(a for a in self.service.snapshot(user["id"])["assignments"] if a["id"] == assignment_id), HTTPStatus.CREATED)
 
     def attach_resource(self, assignment_id, data):
@@ -399,31 +412,36 @@ class Handler(BaseHTTPRequestHandler):
     def create_submission(self, data):
         user = self.require({"student", "teacher", "administrator"})
         if not user: return
-        data['studentId'] = user['id']
+        data['studentId'] = data.get('studentId', user['id']) if user['role'] in ('teacher', 'administrator') else user['id']
         with self.service.db.connection() as db:
             assignment = db.execute('SELECT * FROM assignments WHERE id=? AND active=1', (data.get('assignmentId'),)).fetchone()
             if not assignment: self.error(404, 'Assignment not found'); return
+            if user['role'] in ('teacher', 'administrator') and not self.can_manage(user, assignment['class_id']): return
             if data.get('kind', 'file') not in json.loads(assignment['allowed_submission_types']): self.error(400, 'Submission type is not allowed'); return
-            if not db.execute('SELECT user_id FROM class_memberships WHERE class_id=? AND user_id=? AND removed_at IS NULL', (assignment['class_id'], user['id'])).fetchone(): self.error(403, 'Enrollment required'); return
+            student_id = data['studentId']
+            if not db.execute("SELECT u.id FROM users u JOIN class_memberships m ON m.user_id=u.id WHERE m.class_id=? AND u.id=? AND u.role='student' AND u.active=1 AND m.removed_at IS NULL", (assignment['class_id'], student_id)).fetchone(): self.error(403, 'Student enrollment required'); return
+            recipients = [r['student_id'] for r in db.execute('SELECT student_id FROM assignment_recipients WHERE assignment_id=?', (assignment['id'],))]
+            if recipients and student_id not in recipients: self.error(403, 'Assignment is not assigned to this student'); return
             existing = db.execute('SELECT * FROM submissions WHERE id=?', (data.get('id'),)).fetchone()
             if existing:
-                if existing['student_id'] != user['id']: self.error(403, 'Submission access denied'); return
+                if existing['student_id'] != student_id or existing['assignment_id'] != assignment['id']: self.error(403, 'Submission access denied'); return
                 self.send_json({'id': existing['id']}); return
-            previous = db.execute('SELECT status FROM submissions WHERE assignment_id=? AND student_id=? ORDER BY submitted_at DESC LIMIT 1', (assignment['id'], user['id'])).fetchone()
+            previous = db.execute('SELECT status FROM submissions WHERE assignment_id=? AND student_id=? ORDER BY submitted_at DESC LIMIT 1', (assignment['id'], student_id)).fetchone()
             if not assignment['allow_resubmission'] and previous and previous['status'] != 'revision_requested': self.error(409, 'Resubmission is disabled'); return
             if not assignment['allow_late'] and assignment['due_at'] and assignment['due_at'] < timestamp(): self.error(409, 'Assignment is past due'); return
         submission_id, created, student_id = data.get("id", uid()), timestamp(), data.get("studentId", user["id"])
         with self.service.db.connection() as db:
             attempt = db.execute("SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n FROM submissions WHERE assignment_id = ? AND student_id = ?", (data.get("assignmentId"), student_id)).fetchone()["n"]
             db.execute("INSERT INTO submissions (id, assignment_id, student_id, attempt_number, submitted_at, status, grade_value, grade_label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'uploading', NULL, NULL, ?, ?)", (submission_id, data.get("assignmentId"), student_id, attempt, created, created, created))
-        self.send_json({"id": submission_id, "assignmentId": data.get("assignmentId"), "studentId": student_id, "submittedAt": created, "status": "submitted", "files": [], "feedback": [], "gradeValue": None, "gradeLabel": None}, HTTPStatus.CREATED)
+        self.send_json({"id": submission_id, "assignmentId": data.get("assignmentId"), "studentId": student_id, "submittedAt": created, "status": "uploading", "files": [], "feedback": [], "gradeValue": None, "gradeLabel": None}, HTTPStatus.CREATED)
 
     def attach_submission_file(self, submission_id, data):
         user = self.require({"student", "teacher", "administrator"})
         if not user: return
         with self.service.db.connection() as db:
-            submission = db.execute('SELECT student_id FROM submissions WHERE id=?', (submission_id,)).fetchone()
-            if not submission or submission['student_id'] != user['id']: self.error(403, 'Only the submission owner can attach files'); return
+            submission = db.execute('SELECT s.student_id, a.class_id FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.id=?', (submission_id,)).fetchone()
+            if not submission: self.error(404, 'Submission not found'); return
+            if submission['student_id'] != user['id'] and not (user['role'] in ('teacher', 'administrator') and self.can_manage(user, submission['class_id'])): self.error(403, 'Submission access denied'); return
             existing_file = db.execute('SELECT id FROM submission_files WHERE submission_id=?', (submission_id,)).fetchone()
             if existing_file: self.send_json({'id': existing_file['id'], 'submissionId': submission_id}); return
             upload = db.execute('SELECT * FROM uploads WHERE id=? AND owner_id=?', (data.get('id'), user['id'])).fetchone()
@@ -517,10 +535,13 @@ class Handler(BaseHTTPRequestHandler):
         with self.service.db.connection() as db:
             upload = db.execute('SELECT * FROM uploads WHERE id=?', (file_id,)).fetchone()
             allowed = upload and upload['owner_id'] == user['id']
-            teacher = db.execute('SELECT c.teacher_id FROM submission_files f JOIN submissions s ON s.id=f.submission_id JOIN assignments a ON a.id=s.assignment_id JOIN classes c ON c.id=a.class_id WHERE f.id=?', (file_id,)).fetchone()
-            resource = db.execute("SELECT a.class_id, c.teacher_id FROM assignment_resources r JOIN assignments a ON a.id=r.assignment_id JOIN classes c ON c.id=a.class_id WHERE r.storage_key=?", ('files/' + file_id,)).fetchone()
+            teacher = db.execute('SELECT c.teacher_id, s.student_id FROM submission_files f JOIN submissions s ON s.id=f.submission_id JOIN assignments a ON a.id=s.assignment_id JOIN classes c ON c.id=a.class_id WHERE f.id=?', (file_id,)).fetchone()
+            if teacher and teacher['student_id'] == user['id']: allowed = True
+            resource = db.execute("SELECT a.id, a.class_id, c.teacher_id FROM assignment_resources r JOIN assignments a ON a.id=r.assignment_id JOIN classes c ON c.id=a.class_id WHERE r.storage_key=?", ('files/' + file_id,)).fetchone()
             if resource:
-                allowed = allowed or resource['teacher_id'] == user['id'] or bool(db.execute('SELECT user_id FROM class_memberships WHERE class_id=? AND user_id=? AND removed_at IS NULL', (resource['class_id'], user['id'])).fetchone())
+                recipients = [r['student_id'] for r in db.execute('SELECT student_id FROM assignment_recipients WHERE assignment_id=?', (resource['id'],))]
+                enrolled = bool(db.execute('SELECT user_id FROM class_memberships WHERE class_id=? AND user_id=? AND removed_at IS NULL', (resource['class_id'], user['id'])).fetchone())
+                allowed = allowed or resource['teacher_id'] == user['id'] or (enrolled and (not recipients or user['id'] in recipients))
             if not allowed and user['role'] != 'administrator' and not (teacher and teacher['teacher_id'] == user['id']): self.error(403, 'File access denied'); return
         if not file_id or Path(file_id).name != file_id:
             self.error(HTTPStatus.BAD_REQUEST, "Invalid file id"); return
@@ -557,7 +578,9 @@ class Handler(BaseHTTPRequestHandler):
             if any(Path(name).is_absolute() or ".." in Path(name).parts for name in archive.namelist()): self.error(HTTPStatus.BAD_REQUEST, "Unsafe backup archive"); return
             if archive.testzip() is not None: raise ValueError('Backup checksum validation failed')
             with self.service.db.connection() as db: current_sessions = [dict(row) for row in db.execute('SELECT * FROM sessions')]
-            extracted = self.service.settings.data_dir / (backup_id + ".restore.sqlite3"); extracted.write_bytes(archive.read("locallearn.sqlite3")); source = sqlite3.connect(extracted)
+            extracted = self.service.settings.data_dir / (backup_id + ".restore.sqlite3"); extracted.write_bytes(archive.read("locallearn.sqlite3"))
+            Database(extracted, self.service.db.schema_path)
+            source = sqlite3.connect(extracted)
             if source.execute('PRAGMA integrity_check').fetchone()[0] != 'ok': source.close(); extracted.unlink(); raise ValueError('Backup database is damaged')
             with self.service.db.connection() as db:
                 source.backup(db)
@@ -589,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(public_user(row)); return
         if path.startswith("/api/classes/"):
             if not self.require({"teacher", "administrator"}): return
-            entity = path.split("/")[-1]; mapping = {"name": "name", "description": "description", "room": "room", "term": "term", "active": "active"}; fields, values = [], []
+            entity = path.split("/")[-1]; mapping = {"name": "name", "description": "description", "room": "room", "term": "term", "sectionName": "section_name", "active": "active"}; fields, values = [], []
             for key, column in mapping.items():
                 if key in data: fields.append(column + " = ?"); values.append(as_bool(data[key]) if key == "active" else data[key])
             if fields: values.extend([timestamp(), entity]);

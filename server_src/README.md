@@ -8,13 +8,13 @@ Create the first administrator using the bootstrap command below. Sign in as tha
 
 ## Offline builds and classroom documents
 
-Teachers can draft assignments with descriptions, due dates/times, late/resubmission rules, allowed submission types, and document attachments. The question builder supports multiple-choice, true/false, and written answers. Drafts, grades, quizzes, and pending uploads are saved locally and retried automatically while the app is open. Students can open downloaded assignment resources and submit files or written responses offline; the Pi confirms final receipt after reconnecting.
+Teachers can assign work to a whole class or selected enrolled students, submit documents or photos on a student's behalf, enter numeric or letter grades, and configure optional class sections. Teachers can draft assignments with descriptions, due dates/times, late/resubmission rules, allowed submission types, and document attachments. The question builder supports multiple-choice, true/false, and written answers. Drafts, grades, quizzes, and pending uploads are saved locally and retried automatically while the app is open. Students can open downloaded assignment resources and submit files or written responses offline; the Pi confirms final receipt after reconnecting.
 
 Build native Android APKs for reliable offline launches without any web server. For production web, run `npm run build:web:offline` on the build machine and copy the resulting `dist/` folder alongside `server_src/` on the Pi. The API serves that folder on port 9000 and sends the cross-origin isolation headers needed by Expo SQLite. Override its location with `LOCALLEARN_WEB_DIR` if necessary. Serve it through HTTPS with a browser-trusted certificate for service-worker installation and offline browser reloads; HTTP on a LAN hostname does not satisfy browser secure-context requirements. Keep the API and web app under the same HTTPS origin, or explicitly configure the HTTPS API URL in the build. No internet service is needed at runtime.
 
 Only files already downloaded to the device are available offline. Keep the app connected once while its documents download. Browser storage clearing, app uninstall, or deleting application data removes the saved login and local unsent work.
 
-Verification: `npm run typecheck`, `npm run test:offline`, and `python3 -m unittest server_src.test_access -v`.
+Verification: `npm run typecheck`, `npm run test:offline` (12 client regressions), and `python3 -m unittest server_src.test_access -v`. Production exports can be checked with `npm run build:web:offline` and `npx expo export --platform android --output-dir .expo-export`. Rebuild the native app after installing native dependency changes, including Expo Crypto.
 
 Students select a file and confirm submission. The encrypted local outbox retains work until the authenticated file upload, submission receipt, and file attachment all succeed. Teachers open Workspace to download original files, write feedback, assign grades, return work, or request revisions. Student snapshots include authoritative grades and feedback. The teacher workspace also publishes text materials and written-answer quizzes and reviews quiz responses; multiple-choice quiz scoring happens on the server.
 
@@ -79,7 +79,7 @@ Leave that SSH session running. From a second SSH session, check the local API:
 curl http://127.0.0.1:9000/api/admin/health
 ```
 
-The admin health route requires login in the current implementation; use the app to log in, or check that the process is listening with `ss -ltnp | grep 9000`. On a phone connected to `Photobooth-AP`, configure the Expo build with `EXPO_PUBLIC_LMS_SERVER_URL=http://192.168.4.1:9000`. For the demo account, provide the admin-created student credentials using the app's login configuration. Do not put a real password into a source-controlled `.env` file.
+The public health route returns a minimal availability response. Sign in as an administrator to see storage monitoring, or check that the process is listening with `ss -ltnp | grep 9000`. On a phone connected to `Photobooth-AP`, configure the Expo build with `EXPO_PUBLIC_LMS_SERVER_URL=http://192.168.4.1:9000`. For the demo account, provide the admin-created student credentials using the app's login configuration. Do not put a real password into a source-controlled `.env` file.
 
 ## Run at boot with systemd
 

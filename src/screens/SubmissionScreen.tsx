@@ -12,7 +12,7 @@ import { theme } from '../theme';
 import {LocalServerClient} from '../services/serverApi';
 import {syncQueue} from '../services/syncQueue';
 import {FileAttachments} from '../components/FileAttachments';
-import {cacheValue, cachedValue} from '../db/database';
+import {cacheValue, cachedValue, accountStorageName} from '../db/database';
 import {useEffect} from 'react';
 
 const labels: Record<SubmissionType, string> = { file: 'Upload a file', photo: 'Choose a picture', scan: 'Scan with camera' };
@@ -46,6 +46,9 @@ export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignme
         size = asset.size ?? null;
         base64 = asset.base64 ?? null;
       } else {
+        if (kind === 'scan' && Platform.OS !== 'web' && !(await ImagePicker.requestCameraPermissionsAsync()).granted) {
+          throw Error('Allow camera access to scan your work, or choose a saved picture instead.');
+        }
         const result = kind === 'scan' ? await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.85, base64: Platform.OS === 'web' }) : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.85, base64: Platform.OS === 'web' });
         if (result.canceled) return;
         const asset = result.assets[0];
@@ -62,7 +65,7 @@ export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignme
         content = base64 ? `data:${mimeType};base64,${base64}` : null;
         localUri = content ?? uri;
       } else {
-        const directory = `${FileSystem.documentDirectory}submissions/`;
+        const directory = `${FileSystem.documentDirectory}submissions/${accountStorageName()}/`;
         await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
         localUri = `${directory}${Date.now()}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
         await FileSystem.copyAsync({ from: uri, to: localUri });
@@ -101,7 +104,7 @@ export function SubmissionScreen({ assignment, onBack, onSubmitted }: { assignme
     <Text style={styles.title}>{assignment.title}</Text>
     <Text style={styles.className}>{assignment.subject} · {assignment.teacher}</Text>
     {assignment.submissionStatus ? <Text style={styles.message}>{assignment.submissionStatus.replace(/_/g, ' ')}{assignment.submittedAt ? ` · Received ${new Date(assignment.submittedAt).toLocaleString()}` : ''}</Text> : null}
-    {assignment.grade !== null || assignment.feedback ? <View style={styles.card}><Text style={styles.sectionTitle}>Teacher feedback</Text><Text style={styles.value}>{assignment.grade !== null ? `Grade: ${assignment.grade}` : 'Not graded yet'}</Text><Text style={styles.description}>{assignment.feedback || 'No written feedback yet.'}</Text></View> : null}
+    {assignment.grade !== null || assignment.gradeLabel || assignment.feedback ? <View style={styles.card}><Text style={styles.sectionTitle}>Teacher feedback</Text><Text style={styles.value}>{assignment.grade !== null ? `Grade: ${assignment.grade}` : assignment.gradeLabel ? `Grade: ${assignment.gradeLabel}` : 'Not graded yet'}</Text><Text style={styles.description}>{assignment.feedback || 'No written feedback yet.'}</Text></View> : null}
     <View style={styles.card}><Text style={styles.label}>Due date</Text><Text style={styles.value}>{assignment.dueAt ? new Date(assignment.dueAt).toLocaleString() : assignment.dueDate}</Text><Text style={styles.label}>Instructions</Text><Text style={styles.description}>{assignment.description || 'No additional instructions.'}</Text></View>
     {assignment.resources?.length ? <View style={styles.card}><Text style={styles.sectionTitle}>Assignment documents</Text><FileAttachments files={assignment.resources}/></View> : null}
     <Text style={styles.sectionTitle}>Choose a submission</Text>

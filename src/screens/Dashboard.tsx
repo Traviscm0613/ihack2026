@@ -28,8 +28,8 @@ function isInCurrentWeek(dateValue: string) {
   const today = new Date();
   const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
   const sunday = new Date(monday);
-  sunday.setDate(sunday.getDate() + 6);
-  return due >= monday && due <= sunday;
+  sunday.setDate(sunday.getDate() + 7);
+  return due >= monday && due < sunday;
 }
 
 const weekStyles = createThemedStyles({ weekCard: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 16, backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 13, padding: 16, marginBottom: 14 }, weekCopy: { flex: 1 }, weekEyebrow: { color: theme.colors.violet, fontSize: 9, fontWeight: '800' as const, letterSpacing: 1 }, weekTitle: { color: theme.colors.ink, fontSize: 15, fontWeight: '800' as const, marginTop: 5 }, weekBody: { color: theme.colors.muted, fontSize: 10, marginTop: 5 } });

@@ -1,4 +1,8 @@
 import nacl from 'tweetnacl';
+import {getRandomValues} from 'expo-crypto';
+
+// Hermes does not supply the browser random generator TweetNaCl expects.
+nacl.setPRNG((bytes, length) => {getRandomValues(bytes.subarray(0, length));});
 
 type ProtectedEnvelope = {
   version: 1;

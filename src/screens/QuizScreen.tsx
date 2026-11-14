@@ -11,11 +11,30 @@ export function QuizScreen({ quiz, onBack, onSubmitted }: { quiz: Quiz; onBack: 
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [result, setResult] = useState<string | null>(null);
-  useEffect(() => { getQuizAttempt(quiz.id).then((attempt) => { if (attempt) { setSubmitted(true); setResult(attempt.status === 'graded' ? `Score: ${attempt.score}` : 'Saved and locked. Awaiting synchronization or teacher feedback.'); } }); }, [quiz.id]);
-  useEffect(() => {cachedValue<Record<string, string>>(`quiz-draft:${quiz.id}`).then(saved => {if(saved) setAnswers(saved);});}, [quiz.id]);
+  const [ready, setReady] = useState(false);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    let active = true;
+    Promise.all([getQuizAttempt(quiz.id), cachedValue<Record<string, string>>(`quiz-draft:${quiz.id}`)]).then(([attempt, saved]) => {
+      if (!active) return;
+      if (saved) setAnswers(saved);
+      if (attempt) {setSubmitted(true); setResult(attempt.status === 'graded' ? `Score: ${attempt.score}` : 'Saved and locked. Awaiting synchronization or teacher feedback.');}
+      setReady(true);
+    }).catch(error => {if (active) setResult(String(error));});
+    return () => {active = false;};
+  }, [quiz]);
   const choose = (id: string, answer: string) => setAnswers(current => {const updated = {...current, [id]: answer}; void cacheValue(`quiz-draft:${quiz.id}`, updated); return updated;});
-  const submit = async () => { if (submitted) return; const attempt = await submitQuizAttempt(quiz, answers); setSubmitted(true); setResult(attempt.alreadySubmitted ? 'This quiz has already been submitted. You are awaiting teacher feedback.' : 'Saved on this device and locked. It will be sent when the Pi is reachable.'); await onSubmitted?.(); };
-  return <View><Pressable style={styles.back} onPress={onBack}><AppIcon icon={faArrowLeft} size={12} color={theme.colors.violet} /><Text style={styles.backText}>Back to class</Text></Pressable><Text style={styles.eyebrow}>QUIZ</Text><Text style={styles.title}>{quiz.title}</Text><Text style={styles.description}>{quiz.description}</Text>{submitted ? <View style={styles.locked}><AppIcon icon={faCircleCheck} size={18} color={theme.colors.green} /><View><Text style={styles.lockedTitle}>Quiz already submitted</Text><Text style={styles.lockedBody}>{result ?? 'Saved and locked. Awaiting teacher feedback.'}</Text></View></View> : <><View style={styles.questions}>{quiz.questions.map((question, index) => <Question key={question.id} number={index + 1} question={question} answer={answers[question.id]} onChange={(answer) => choose(question.id, answer)} />)}</View><Pressable style={styles.button} onPress={submit}><Text style={styles.buttonText}>Submit quiz</Text></Pressable></>}{result && !submitted ? <View style={styles.result}><AppIcon icon={faCircleCheck} size={16} color={theme.colors.green} /><Text style={styles.resultText}>{result}</Text></View> : null}</View>;
+  const submit = async () => {
+    if (submitted || saving || !ready) return;
+    if (quiz.questions.some(question => !answers[question.id]?.trim())) {setResult('Answer each question before submitting.'); return;}
+    setSaving(true);
+    try {
+      const attempt = await submitQuizAttempt(quiz, answers);
+      setSubmitted(true); setResult(attempt.alreadySubmitted ? 'This quiz has already been submitted. You are awaiting teacher feedback.' : 'Saved on this device and locked. It will be sent when the Pi is reachable.');
+      await onSubmitted?.();
+    } catch(error) {setResult(String(error));} finally {setSaving(false);}
+  };
+  return <View><Pressable style={styles.back} onPress={onBack}><AppIcon icon={faArrowLeft} size={12} color={theme.colors.violet} /><Text style={styles.backText}>Back to class</Text></Pressable><Text style={styles.eyebrow}>QUIZ</Text><Text style={styles.title}>{quiz.title}</Text><Text style={styles.description}>{quiz.description}</Text><Text style={styles.description}>Due {quiz.dueAt ? new Date(quiz.dueAt).toLocaleString() : quiz.dueDate}</Text>{submitted ? <View style={styles.locked}><AppIcon icon={faCircleCheck} size={18} color={theme.colors.green} /><View><Text style={styles.lockedTitle}>Quiz already submitted</Text><Text style={styles.lockedBody}>{result ?? 'Saved and locked. Awaiting teacher feedback.'}</Text></View></View> : <><View style={styles.questions}>{quiz.questions.map((question, index) => <Question key={question.id} number={index + 1} question={question} answer={answers[question.id]} onChange={(answer) => choose(question.id, answer)} />)}</View><Pressable disabled={!ready || saving} style={styles.button} onPress={submit}><Text style={styles.buttonText}>{saving ? 'Saving…' : ready ? 'Submit quiz' : 'Opening saved quiz…'}</Text></Pressable></>}{result && !submitted ? <View style={styles.result}><AppIcon icon={faCircleCheck} size={16} color={theme.colors.green} /><Text style={styles.resultText}>{result}</Text></View> : null}</View>;
 }
 
 function Question({ number, question, answer, onChange }: { number: number; question: Quiz['questions'][number]; answer?: string; onChange: (answer: string) => void }) {

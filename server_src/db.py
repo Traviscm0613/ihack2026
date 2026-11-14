@@ -41,7 +41,7 @@ class Database:
                 if connection.execute('SELECT version FROM schema_migrations WHERE version=?', (migration.stem,)).fetchone(): continue
                 connection.executescript(migration.read_text(encoding='utf-8'))
                 connection.execute('INSERT INTO schema_migrations(version) VALUES (?)', (migration.stem,))
-            connection.execute('PRAGMA user_version = 2')
+            connection.execute('PRAGMA user_version = 3')
 
     @staticmethod
     def row(row):
