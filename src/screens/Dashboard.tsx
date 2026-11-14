@@ -1,26 +1,37 @@
 import { useMemo, useState } from 'react';
-import { faArrowRight, faBookOpen, faCalculator, faCheck, faCircle, faClock, faCloudArrowUp, faFlask, faGraduationCap, faStar } from '@fortawesome/free-solid-svg-icons';
+import { faArrowRight, faBookOpen, faCalculator, faCheck, faCircle, faCloudArrowUp, faFlask, faStar } from '@fortawesome/free-solid-svg-icons';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AppIcon } from '../components/AppIcon';
+import { ProgressRing } from '../components/ProgressRing';
 import { Assignment } from '../data/mockData';
 import { CalendarEvent, SchoolClass } from '../db/database';
 import { SectionHeader } from '../components/SectionHeader';
 import { theme } from '../theme';
 
-const stats = [[faBookOpen, 'Open assignments', '05'], [faClock, 'In progress', '03'], [faCheck, 'Completed', '12'], [faGraduationCap, 'Average grade', '92%']] as const;
-
-export function Dashboard({ assignments, classes, events, query, onQueryChange, onNavigateCalendar, onSelectAssignment, onSelectClass }: { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; events: CalendarEvent[]; query: string; onQueryChange: (value: string) => void; onNavigateCalendar: () => void; onSelectAssignment: (assignment: Assignment) => void; onSelectClass: (classId: string) => void }) {
+export function Dashboard({ assignments, classes, events, query, onQueryChange, onNavigateCalendar, onSelectAssignment, onSelectClass, onViewAllAssignments }: { assignments: Assignment[]; classes: SchoolClass[]; event: CalendarEvent | null; events: CalendarEvent[]; query: string; onQueryChange: (value: string) => void; onNavigateCalendar: () => void; onSelectAssignment: (assignment: Assignment) => void; onSelectClass: (classId: string) => void; onViewAllAssignments: () => void }) {
   const upcomingAssignments = assignments.filter((assignment) => !assignment.completed);
+  const currentWeekAssignments = assignments.filter((assignment) => isInCurrentWeek(assignment.dueDate));
   return <View>
     <View style={styles.hero}><Text style={styles.kicker}>THURSDAY, NOVEMBER 13, 2026</Text><Text style={styles.heroTitle}>Good morning, Travis <AppIcon icon={faStar} size={20} color="#f4ad4e" /></Text><Text style={styles.subhead}>Here’s what’s happening across your classes.</Text><View style={styles.sync}><View style={styles.syncDot} /><Text style={styles.syncTitle}>Everything is synced</Text></View></View>
     <TextInput value={query} onChangeText={onQueryChange} placeholder="Search assignments..." placeholderTextColor="#a0a9bb" style={styles.search} />
-    <View style={styles.statGrid}>{stats.map(([icon, label, value]) => <View key={label} style={styles.stat}><AppIcon icon={icon} size={16} color={theme.colors.violet} /><View><Text style={styles.statLabel}>{label}</Text><Text style={styles.statValue}>{value}</Text></View></View>)}</View>
-    <View style={styles.card}><SectionHeader eyebrow="STAY ON TRACK" title="Upcoming assignments" action="View all" />{upcomingAssignments.length ? upcomingAssignments.map((assignment) => <AssignmentRow key={assignment.id} assignment={assignment} onSelect={onSelectAssignment} />) : <Text style={styles.empty}>All done! No upcoming assignments.</Text>}</View>
+    <View style={weekStyles.weekCard}><ProgressRing completed={currentWeekAssignments.filter((assignment) => assignment.completed).length} total={currentWeekAssignments.length} color={theme.colors.violet} size={78} strokeWidth={7} /><View style={weekStyles.weekCopy}><Text style={weekStyles.weekEyebrow}>THIS WEEK</Text><Text style={weekStyles.weekTitle}>Weekly assignment progress</Text><Text style={weekStyles.weekBody}>{currentWeekAssignments.length ? `${currentWeekAssignments.filter((assignment) => assignment.completed).length} of ${currentWeekAssignments.length} assignments complete` : 'No assignments due this week.'}</Text></View></View>
+    <View style={styles.card}><SectionHeader eyebrow="STAY ON TRACK" title="Upcoming assignments" action="View all" onAction={onViewAllAssignments} />{upcomingAssignments.length ? upcomingAssignments.map((assignment) => <AssignmentRow key={assignment.id} assignment={assignment} onSelect={onSelectAssignment} />) : <Text style={styles.empty}>All done! No upcoming assignments.</Text>}</View>
     <View style={styles.card}><SectionHeader eyebrow="YOUR SCHEDULE" title="Current month" /><Calendar events={events} onNavigateCalendar={onNavigateCalendar} /></View>
     <View style={styles.card}><SectionHeader eyebrow="LOCAL-FIRST STATUS" title="Submission center" /><View style={styles.outbox}><AppIcon icon={faCloudArrowUp} size={16} color={theme.colors.violet} /><View><Text style={styles.outboxTitle}>Outbox is empty</Text><Text style={styles.outboxBody}>All your work has reached the local server.</Text></View></View><View style={styles.statusRow}><View style={styles.statusLabel}><AppIcon icon={faCircle} size={6} color={theme.colors.green} /><Text style={styles.statusText}>Connected to school network</Text></View><Text style={styles.statusValue}>192.168.4.1</Text></View></View>
     <View style={styles.card}><SectionHeader eyebrow="THIS SEMESTER" title="My classes" />{classes.map((item) => <Pressable style={styles.classRow} key={item.id} onPress={() => onSelectClass(item.id)}><View style={styles.classStripe} /><View style={styles.classInfo}><Text style={styles.className}>{item.name}</Text><Text style={styles.classCaption}>{item.sectionName ? `${item.sectionName} · ` : ''}{item.teacher} · {item.location}</Text></View></Pressable>)}</View>
   </View>;
 }
+
+function isInCurrentWeek(dateValue: string) {
+  const due = new Date(`${dateValue}T12:00:00`);
+  const today = new Date();
+  const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
+  const sunday = new Date(monday);
+  sunday.setDate(sunday.getDate() + 6);
+  return due >= monday && due <= sunday;
+}
+
+const weekStyles = { weekCard: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 16, backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line, borderRadius: 13, padding: 16, marginBottom: 14 }, weekCopy: { flex: 1 }, weekEyebrow: { color: theme.colors.violet, fontSize: 9, fontWeight: '800' as const, letterSpacing: 1 }, weekTitle: { color: theme.colors.ink, fontSize: 15, fontWeight: '800' as const, marginTop: 5 }, weekBody: { color: theme.colors.muted, fontSize: 10, marginTop: 5 } };
 
 function AssignmentRow({ assignment, onSelect }: { assignment: Assignment; onSelect: (assignment: Assignment) => void }) {
   const icon = assignment.tone === 'math' ? faCalculator : assignment.tone === 'history' ? faBookOpen : faFlask;
